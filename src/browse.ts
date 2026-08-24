@@ -16,6 +16,7 @@ import { renderDiff } from './diff';
 import { collectionDir, repoPath } from './layout';
 import { canAdminCollection, repoIsPrivate, repoRole } from './perms';
 import { displayName, findRepo, isValidName, isValidUserName, listCollections, listRepoDirs, repoDescription, siteDir } from './scan';
+import { countTopics, isValidTopic, repoTopics } from './topics';
 import { Viewer, getViewer } from './session';
 import { serveSite, siteHostUrl } from './site';
 import { loadVault, mergeContributors, userExists } from './vault';
@@ -74,6 +75,7 @@ export function registerBrowse(app: Express, root: string, gates: Gates, lfs: Lf
           collection,
           name,
           description: repoDescription(repo.dir),
+          topics: repoTopics(repo.dir),
           isPrivate: repoIsPrivate(repo.dir),
           updated: await repo.lastUpdated(),
           siteUrl: !hasSite
@@ -99,6 +101,21 @@ export function registerBrowse(app: Express, root: string, gates: Gates, lfs: Lf
     return req.query.sort === 'name' ? 'name' : 'recent';
   }
 
+  // The topic a listing is narrowed to. A value that is not a topic reads as
+  // no narrowing rather than an error, the way an unknown sort does.
+  function topicParam(req: Request): string {
+    const t = typeof req.query.topic === 'string' ? req.query.topic : '';
+    return isValidTopic(t) ? t : '';
+  }
+
+  /** The filter a listing page hands its view: what was chosen, and what there is to choose. */
+  function topicFilter(cards: views.RepoCard[], topic: string): { filtered: views.RepoCard[]; filter: views.TopicFilter } {
+    return {
+      filtered: topic === '' ? cards : cards.filter((c) => (c.topics ?? []).includes(topic)),
+      filter: { current: topic, inUse: countTopics(cards.map((c) => c.topics ?? [])) },
+    };
+  }
+
   app.get(
     '/',
     ah(async (req, res) => {
@@ -107,7 +124,36 @@ export function registerBrowse(app: Express, root: string, gates: Gates, lfs: Lf
       // The counts beside collection names count what this viewer can see,
       // for the same reason the cards do.
       const collections = listCollections(root).map((c, i) => ({ name: c.name, repoCount: cardsPer[i].length }));
-      res.type('html').send(views.homePage(root, collections, cardsPer.flat(), sortParam(req), viewer));
+      const { filtered, filter } = topicFilter(cardsPer.flat(), topicParam(req));
+      res.type('html').send(views.homePage(root, collections, filtered, sortParam(req), viewer, filter));
+    })
+  );
+
+  // The vault's topics, and one topic's repositories. Registered before the
+  // generic /:collection routes, and `topics` is a reserved name (see
+  // src/scan.ts), so no collection can sit where these answer.
+  app.get(
+    '/topics',
+    ah(async (req, res) => {
+      const viewer = getViewer(req, root);
+      const cardsPer = await Promise.all(listCollections(root).map((c) => repoCards(req, c.name, viewer)));
+      const counts = countTopics(cardsPer.flat().map((c) => c.topics ?? []));
+      res.type('html').send(views.topicsIndexPage(counts, viewer));
+    })
+  );
+
+  app.get(
+    '/topics/:topic',
+    ah(async (req, res) => {
+      const viewer = getViewer(req, root);
+      const topic = req.params.topic;
+      if (!isValidTopic(topic)) {
+        send404(res, 'Not found', viewer);
+        return;
+      }
+      const cardsPer = await Promise.all(listCollections(root).map((c) => repoCards(req, c.name, viewer)));
+      const repos = cardsPer.flat().filter((c) => (c.topics ?? []).includes(topic));
+      res.type('html').send(views.topicPage(topic, repos, sortParam(req), viewer));
     })
   );
 
@@ -140,7 +186,7 @@ export function registerBrowse(app: Express, root: string, gates: Gates, lfs: Lf
       // introduces the collection only to viewers who could read it.
       const profileRepo = findRepo(root, collection, '.mochi');
       const profileVisible = profileRepo === null || repoRole(root, viewer?.auth ?? null, profileRepo) !== null;
-      const [cards, profile] = await Promise.all([
+      const [allCards, profile] = await Promise.all([
         collectionIsDir ? repoCards(req, collection, viewer) : Promise.resolve([]),
         profileVisible
           ? collectionProfile(root, collection)
@@ -159,9 +205,10 @@ export function registerBrowse(app: Express, root: string, gates: Gates, lfs: Lf
             isViewer: viewer !== null && viewer.auth.username === collection,
           }
         : null;
+      const { filtered, filter } = topicFilter(allCards, topicParam(req));
       res
         .type('html')
-        .send(views.collectionPage(collection, cards, sortParam(req), viewer, canSettings, profile, owner));
+        .send(views.collectionPage(collection, filtered, sortParam(req), viewer, canSettings, profile, owner, filter));
     })
   );
 
@@ -230,6 +277,7 @@ export function registerBrowse(app: Express, root: string, gates: Gates, lfs: Lf
         latest,
         commitCount,
         description: repoDescription(loaded.repo.dir),
+        topics: repoTopics(loaded.repo.dir),
         contributors,
         readmeHtml,
         readmeName,

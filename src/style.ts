@@ -1275,6 +1275,38 @@ a.chip.label:hover { text-decoration: none; filter: brightness(1.1); }
   overflow: hidden;
 }
 .rc-meta { margin-top: var(--s2); color: var(--fg-subtle); font-size: var(--t-xs); }
+
+/* --- topics ---
+
+   One look everywhere on purpose: a topic is the same topic on a card, in the
+   About panel, and on its own page, so it wears the accent in a rounded pill
+   rather than a colour of its own the way an issue label does. The tinted
+   background is mixed from the accent so every theme keeps its own hue; the
+   plain chip background underneath is the fallback for a browser without
+   color-mix. */
+.topic-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.chip.topic { background: var(--chip-bg); color: var(--accent); border-radius: 999px; font-weight: 500; }
+.chip.topic { background: color-mix(in srgb, var(--accent) 11%, transparent); }
+a.chip.topic:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); text-decoration: none; }
+.rc-topics { margin-top: var(--s2); }
+.side-topics { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 0 0 12px; }
+/* The editor behind the chips: a summary dressed as one more chip, opening
+   the same popover the other menus use. */
+.topic-edit { display: inline-block; }
+.topic-add { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 1px 7px; font-size: 12px; background: var(--chip-bg); color: var(--fg-muted); }
+.topic-add:hover { color: var(--fg); }
+.topic-add .glyph { margin: 0; }
+.topic-edit-menu { padding: 10px 12px; width: 300px; }
+.topic-edit-menu label { display: block; margin-bottom: 4px; }
+.topic-edit-menu input[type="text"] { width: 100%; }
+.topic-edit-menu p { margin: 6px 0; }
+.topic-edit-menu .btn { margin-top: 2px; }
+/* The vault-wide index: each topic once, with how many repositories carry it. */
+.topic-index { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.topic-index li { display: flex; align-items: center; gap: 10px; }
+.topic-title { display: flex; align-items: center; gap: 8px; }
+.topic-title .glyph { color: var(--fg-muted); }
+
 .site-link, .ci-mark { display: inline-flex; color: var(--fg-subtle); }
 .site-link:hover, .ci-mark:hover { color: var(--accent); }
 .ci-success { color: var(--primary); }

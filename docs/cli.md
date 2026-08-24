@@ -111,6 +111,10 @@ Which repository a command is about is resolved in this order: the positional ar
 ```bash
 mochi repo create mycollection/thing --description 'A thing' --readme
 mochi repo edit --description 'A better thing'
+mochi repo edit --topic webgpu --topic numbl   # replace the topics with these
+mochi repo edit --add-topic mri                # keep the rest and add one
+mochi repo edit --remove-topic numbl           # keep the rest and drop one
+mochi repo list --topic webgpu                 # only repositories carrying a topic
 mochi repo edit --upstream https://github.com/owner/repo   # record what mochi sync and pr export use
 mochi repo fork demo/proj myfork
 mochi repo rename demo/proj newname --collection othercollection
@@ -129,6 +133,8 @@ mochi file delete notes.md --yes
 ```
 
 Everything destructive takes `--yes` and refuses without it, rather than prompting: a prompt is no use to a caller that is not a person, and a command that prompts is a command that hangs in a container.
+
+A topic is lowercase letters, digits, and hyphens (`webgpu`, `spike-sorting`), and a repository carries at most 20 of them; anything else is refused rather than rewritten, with the refusal naming the lowercase form when that is the fix. `--topic` and `--clear-topics` name the whole set, so they stand alone; `--add-topic` and `--remove-topic` read the repository first and may be combined. `mochi api topics` lists every topic in use with its count.
 
 `mochi file write` reads the content from `--body`, from `--body-file`, or from stdin when neither is given, so a generated file can be piped straight in. Given `--expected-sha`, a branch that has moved since is a conflict (exit 5) rather than a silent overwrite, which is exactly what a caller that reads, thinks, and then writes wants:
 

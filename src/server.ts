@@ -25,6 +25,7 @@ import { migrateLayout, migratePermissions } from './migrate';
 import { repoRole } from './perms';
 import { registerRedirects } from './redirects';
 import { displayName, listCollections, listRepoDirs } from './scan';
+import { repoTopics } from './topics';
 import { getViewer, renewSession } from './session';
 import { registerSiteHost } from './site';
 import { isUnderSitesHost } from './siteshost';
@@ -316,23 +317,26 @@ export function createApp(root: string) {
     }
     res.type('text/css').set('Cache-Control', 'public, max-age=86400').send(css);
   });
-  // Every repository the interface would show this viewer anyway, as a list
-  // of names, for the jump box to search without a round trip per keystroke.
-  // It says no more than the front page already does to the same eyes: a
-  // private repository is listed only for a viewer with a role there, which
-  // is also why the answer is marked private to shared caches. It is not
-  // /api/repos, which is the authenticated interface for programs and carries
-  // much more per repository than a name.
+  // Every repository the interface would show this viewer anyway, as names
+  // and topics, for the jump box to search without a round trip per
+  // keystroke. It says no more than the front page already does to the same
+  // eyes: a private repository is listed only for a viewer with a role there,
+  // which is also why the answer is marked private to shared caches. It is
+  // not /api/repos, which is the authenticated interface for programs and
+  // carries much more per repository. Topics ride along only where a
+  // repository has them, so the common entry stays one name.
   app.get('/assets/repos.json', (req, res) => {
     const viewer = getViewer(req, root);
-    const repos: string[] = [];
+    const repos: { name: string; topics?: string[] }[] = [];
     for (const c of listCollections(root)) {
       for (const d of listRepoDirs(root, c.name)) {
         const name = displayName(d);
-        if (repoRole(root, viewer?.auth ?? null, { collection: c.name, name, dir: repoPath(root, c.name, d) }) === null) {
+        const dir = repoPath(root, c.name, d);
+        if (repoRole(root, viewer?.auth ?? null, { collection: c.name, name, dir }) === null) {
           continue;
         }
-        repos.push(`${c.name}/${name}`);
+        const topics = repoTopics(dir);
+        repos.push(topics.length ? { name: `${c.name}/${name}`, topics } : { name: `${c.name}/${name}` });
       }
     }
     res.set('Cache-Control', 'private, no-cache').json(repos);

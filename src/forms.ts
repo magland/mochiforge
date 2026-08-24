@@ -654,6 +654,7 @@ export function conflictPage(ctx: RepoCtx, branch: string, retryUrl: string): st
 export function settingsPage(
   ctx: RepoCtx,
   description: string,
+  topics: string[],
   access: { collaborators: { username: string; role: string }[]; owners: string[] },
   msg?: string,
   error?: string
@@ -671,6 +672,7 @@ export function settingsPage(
 <form method="post" action="${base}/settings">
 ${csrfField(ctx.viewer!)}
 <div class="field"><label for="description">Description</label><input type="text" id="description" name="description" value="${description}"><p class="muted small">Shown beside the repository in listings and in the About panel.</p></div>
+<div class="field"><label for="topics">Topics</label><input type="text" id="topics" name="topics" value="${topics.join(' ')}" placeholder="webgpu numbl mri"><p class="muted small">Separated by spaces or commas: lowercase letters, digits, and hyphens, up to 20. Listings can be narrowed by topic, and each topic has a page across the vault.</p></div>
 ${defaultBranchField}
 <button type="submit" class="btn btn-primary">${icon('check')}<span>Save</span></button>
 </form>

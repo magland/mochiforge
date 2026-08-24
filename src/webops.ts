@@ -14,6 +14,7 @@ import * as forms from './forms';
 import * as ops from './ops';
 import { MAX_EDIT_SIZE, MAX_UPLOAD_SIZE, OpError, opErrorStatus } from './ops';
 import { isAgeFile, looksLikeAge } from './agefile';
+import { parseTopicsInput, repoTopics, setTopics } from './topics';
 import {
   displayName,
   findRepo,
@@ -1572,6 +1573,7 @@ export function registerWebOps(
         forms.settingsPage(
           ctx,
           repoDescription(loaded.repo.dir) ?? '',
+          repoTopics(loaded.repo.dir),
           {
             collaborators: Object.entries(access.collaborators).map(([username, role]) => ({ username, role })),
             owners: collectionOwners(root, loaded.repo.collection),
@@ -1597,6 +1599,12 @@ export function registerWebOps(
       }
       try {
         ops.setDescription(loaded.repo.dir, field(req, 'description'));
+        // Only when the form carried the field: the General form always does,
+        // but treating an absent field as "no topics" would let any other
+        // post to this route silently clear them.
+        if ((req.body as Record<string, unknown>).topics !== undefined) {
+          setTopics(loaded.repo.dir, parseTopicsInput(field(req, 'topics')));
+        }
       } catch (e) {
         if (e instanceof OpError) {
           fail(res, opErrorStatus(e.kind), e.message, viewer, backUrl);
@@ -1613,6 +1621,40 @@ export function registerWebOps(
         await ops.setDefaultBranch(loaded.repo.dir, defaultBranch);
       }
       res.redirect(`${backUrl}?msg=${encodeURIComponent('Settings saved.')}`);
+    })
+  );
+
+  // Topics on their own, for the editor in the repository page's About panel:
+  // a form that posted only topics to the route above would clear the
+  // description on the way. Write role, the same as the description, since a
+  // topic publishes nothing and withdraws nothing.
+  app.post(
+    '/:collection/:repo/settings/topics',
+    form,
+    ah(async (req, res) => {
+      const viewer = requireViewerPost(root, req, res);
+      if (!viewer) return;
+      const loaded = await loadRepo(root, req, res, viewer);
+      if (!loaded) return;
+      // Back to where the form was: the About panel's editor says so, and
+      // anything else lands on the settings page.
+      const backUrl = field(req, 'next') === 'repo' ? urlOf(loaded.repo) : `${urlOf(loaded.repo)}/settings`;
+      if (!atLeast(loaded.role, 'write')) {
+        fail(res, 403, `You do not have the write role on ${loaded.repo.collection}/${loaded.repo.name}.`, viewer, backUrl);
+        return;
+      }
+      try {
+        setTopics(loaded.repo.dir, parseTopicsInput(field(req, 'topics')));
+      } catch (e) {
+        if (e instanceof OpError) {
+          fail(res, opErrorStatus(e.kind), e.message, viewer, backUrl);
+          return;
+        }
+        throw e;
+      }
+      const now = repoTopics(loaded.repo.dir);
+      const msg = now.length === 0 ? 'Topics cleared.' : `Topics saved: ${now.join(', ')}.`;
+      res.redirect(`${backUrl}?msg=${encodeURIComponent(msg)}`);
     })
   );
 

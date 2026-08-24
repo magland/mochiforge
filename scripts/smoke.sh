@@ -840,6 +840,41 @@ check "save settings" 302 -b "$JAR" "$BASE/demo/proj/settings" \
 check "collection page shows description" 200 "$BASE/demo"
 body_has "description updated" 'A refreshed description'
 
+# ---- topics ----
+#
+# Free-form tags on a repository, GitHub-shaped: lowercase, validated where
+# they are written, rendered as chips, and narrowing listings everywhere. The
+# checks cover both write paths (the settings form and the About panel's own
+# editor), the refusal, and every page a topic leads to.
+
+check "save settings with topics" 302 -b "$JAR" "$BASE/demo/proj/settings" \
+  --data-urlencode "csrf=$CSRF" --data-urlencode "description=A refreshed description" \
+  --data-urlencode "topics=webgpu, numbl" --data-urlencode defaultBranch=main
+check "the repository page wears the chips" 200 "$BASE/demo/proj"
+body_has "each linking to the topic's own page" 'href="/topics/webgpu"'
+check "an uppercase topic is refused, not rewritten" 400 -b "$JAR" "$BASE/demo/proj/settings" \
+  --data-urlencode "csrf=$CSRF" --data-urlencode "description=A refreshed description" \
+  --data-urlencode "topics=WebGPU" --data-urlencode defaultBranch=main
+body_has "saying what would be accepted" 'not a usable topic'
+check "the About panel's editor posts topics alone" 302 -b "$JAR" "$BASE/demo/proj/settings/topics" \
+  --data-urlencode "csrf=$CSRF" --data-urlencode "topics=webgpu numbl mri" --data-urlencode next=repo
+check "the repository page again" 200 "$BASE/demo/proj"
+body_has "the description survived the topics-only post" 'A refreshed description'
+body_has "and the added topic renders" 'href="/topics/mri"'
+check "the topics index lists what is in use" 200 "$BASE/topics"
+body_has "naming the topic" '>webgpu</a>'
+check "one topic's page lists its repositories" 200 "$BASE/topics/webgpu"
+body_has "this repository among them" 'href="/demo/proj"'
+check "an unused topic's page is empty rather than a 404" 200 "$BASE/topics/nothing-here"
+body_has "and says so" 'No repository carries this topic'
+check "a topic that is not a topic 404s" 404 "$BASE/topics/NOT%20A%20TOPIC"
+check "the front page narrows by topic" 200 "$BASE/?topic=mri"
+body_has "and says what it narrowed to" 'with the topic <b>mri</b>'
+check "the collection page narrows by topic" 200 "$BASE/demo?topic=webgpu"
+body_has "keeping the repository that carries it" 'href="/demo/proj"'
+check "the jump box data carries topics" 200 -b "$JAR" "$BASE/assets/repos.json"
+body_has "on the repository that has them" '"topics":\["webgpu","numbl","mri"\]'
+
 # ---- a collection's profile README ----
 #
 # The file is read from a .mochi repository in the collection, which is an
@@ -1839,6 +1874,24 @@ body_has "reporting the new default branch" '"defaultBranch":"from-api"'
 api "api changes it back" 200 -X PATCH -H "$JSON_CT" --data '{"defaultBranch":"main"}' "$BASE/api/repos/apis/made"
 api "changing nothing is a bad request rather than a no-op" 400 -X PATCH -H "$JSON_CT" \
   --data '{}' "$BASE/api/repos/apis/made"
+
+api "api sets topics" 200 -X PATCH -H "$JSON_CT" \
+  --data '{"topics":["compression","benchmarks"]}' "$BASE/api/repos/apis/made"
+body_has "reporting the set as stored" '"topics":\["compression","benchmarks"\]'
+api "an invalid topic is refused" 400 -X PATCH -H "$JSON_CT" \
+  --data '{"topics":["Not Valid"]}' "$BASE/api/repos/apis/made"
+api "a topics value that is not a list is refused" 400 -X PATCH -H "$JSON_CT" \
+  --data '{"topics":"compression"}' "$BASE/api/repos/apis/made"
+api "the repository carries its topics" 200 "$BASE/api/repos/apis/made"
+body_has "in its summary" '"topics":\["compression","benchmarks"\]'
+api "the repo list narrows by topic" 200 "$BASE/api/repos?topic=compression"
+body_has "keeping the one that carries it" '"name":"made"'
+body_lacks "and dropping the ones that do not" '"name":"repo"'
+api "a malformed topic query is refused" 400 "$BASE/api/repos?topic=Not%20Valid"
+api "the vault's topics are counted" 200 "$BASE/api/topics"
+body_has "with each topic and its count" '"topic":"compression","count":1'
+api "api clears topics" 200 -X PATCH -H "$JSON_CT" --data '{"topics":[]}' "$BASE/api/repos/apis/made"
+body_has "reporting none left" '"topics":\[\]'
 
 api "api forks a repository" 201 -H "$JSON_CT" \
   --data '{"collection":"apiforks"}' "$BASE/api/repos/apis/made/fork"

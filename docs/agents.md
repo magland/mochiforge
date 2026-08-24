@@ -128,7 +128,7 @@ The most useful part of this document. Do not go looking for these; they are not
 
 - **No reactions,** on anything.
 - **No review threads, no approvals, no requested reviewers, no suggested changes.** A pull request has a body and comments, and that is all.
-- **No assignees, no milestones, no projects, no labels on pull requests.** Issues have labels; nothing else does.
+- **No assignees, no milestones, no projects, no labels on pull requests.** Issues have labels and repositories have topics (`repo edit --topic`, lowercase-and-hyphens, narrowing `repo list --topic` and the listings); nothing else carries either.
 - **No notifications, no watching, no stars, no forks graph.** Forking copies a repository and records its parent; nothing subscribes to anything.
 - **No webhooks and no outbound HTTP of any kind.** Nothing in the vault calls anything.
 - **No check suites and no commit statuses.** `pr checks` reports the workflow runs whose commit is the pull request's head, which is the nearest thing there is, and that is all it means.

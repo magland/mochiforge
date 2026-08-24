@@ -21,6 +21,7 @@ const RESERVED_NAMES = new Set([
   'import',
   'admin',
   'settings',
+  'topics',
 ]);
 
 export function isValidName(name: string): boolean {

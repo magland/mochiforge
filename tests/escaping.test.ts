@@ -67,6 +67,7 @@ function treeView(overrides: Partial<TreeView> = {}): TreeView {
     latest: null,
     commitCount: 0,
     description: null,
+    topics: [],
     readmeHtml: null,
     readmeName: null,
     languages: [],
@@ -165,6 +166,7 @@ test('a repository description is escaped on the settings page', () => {
     forms.settingsPage(
       ctxFor({ isPrivate: true }),
       XSS,
+      [XSS],
       { collaborators: [{ username: XSS, role: XSS }], owners: [XSS] },
       XSS,
       XSS

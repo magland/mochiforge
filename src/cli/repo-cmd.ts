@@ -44,10 +44,15 @@ export const repoCommands: Command[] = [
     path: ['repo', 'list'],
     summary: 'List the repositories in the vault',
     args: [{ name: 'collection' }],
-    options: [JSON_OPTION, ...TARGET_OPTIONS],
+    options: [
+      { name: 'topic', type: 'string', value: '<t>', summary: 'Only repositories carrying this topic' },
+      JSON_OPTION,
+      ...TARGET_OPTIONS,
+    ],
     async run(inv) {
       const target = await targetFrom(inv);
-      const data = await api(target, 'GET', '/api/repos');
+      const topic = inv.str('topic');
+      const data = await api(target, 'GET', `/api/repos${topic !== null ? `?topic=${encodeURIComponent(topic)}` : ''}`);
       const only = inv.args[0] ?? null;
       const repos = ((data.repos ?? []) as Record<string, unknown>[]).filter(
         (r) => only === null || r.collection === only
@@ -90,8 +95,10 @@ export const repoCommands: Command[] = [
         console.log(`forked from ${from.collection}/${from.repo}`);
       }
       if (data.upstream) console.log(`forked from ${data.upstream}`);
+      const topics = (data.topics ?? []) as string[];
       printTable([
         ['visibility', data.private ? 'private' : 'public'],
+        ...(topics.length ? [['topics', topics.join(', ')]] : []),
         ['default branch', String(data.defaultBranch ?? '(none)')],
         ['last updated', shortDate(data.updated)],
         ['branches', String(data.branches)],
@@ -161,10 +168,17 @@ export const repoCommands: Command[] = [
   },
   {
     path: ['repo', 'edit'],
-    summary: 'Change a repository description, default branch, or visibility',
+    summary: 'Change a repository description, topics, default branch, or visibility',
+    description: `--topic replaces the whole set, which is what the API does; --add-topic and
+--remove-topic keep what is there and change it, which means reading the
+repository first. A topic is lowercase letters, digits, and hyphens.`,
     args: [{ name: 'repo' }],
     options: [
       { name: 'description', type: 'string', value: '<d>', summary: 'New description' },
+      { name: 'topic', type: 'string[]', value: '<t>', summary: 'Replace the topics with these' },
+      { name: 'add-topic', type: 'string[]', value: '<t>', summary: 'Keep the existing topics and add these' },
+      { name: 'remove-topic', type: 'string[]', value: '<t>', summary: 'Keep the existing topics apart from these' },
+      { name: 'clear-topics', type: 'boolean', summary: 'Remove every topic' },
       { name: 'default-branch', type: 'string', value: '<b>', summary: 'New default branch' },
       { name: 'upstream', type: 'string', value: '<url>', summary: "URL this was forked from; '' clears it" },
       { name: 'private', type: 'boolean', summary: 'Make the repository private (takes the admin role)' },
@@ -180,13 +194,31 @@ export const repoCommands: Command[] = [
         throw new CliError('Pass --private or --public, not both.', EXIT_USAGE);
       }
       const priv = inv.bool('private') ? true : inv.bool('public') ? false : undefined;
-      if (description === null && defaultBranch === null && upstream === null && priv === undefined) {
-        throw new CliError('Nothing to change. Pass --description, --default-branch, --upstream, --private, or --public.', EXIT_USAGE);
+      const set = inv.list('topic');
+      const add = inv.list('add-topic');
+      const remove = inv.list('remove-topic');
+      const clear = inv.bool('clear-topics');
+      // --topic and --clear-topics each name the whole set, so they combine
+      // with nothing; --add-topic and --remove-topic edit it and may combine.
+      if ((set.length !== 0 ? 1 : 0) + (clear ? 1 : 0) + (add.length !== 0 || remove.length !== 0 ? 1 : 0) > 1) {
+        throw new CliError('Pass --topic or --clear-topics on their own, or --add-topic/--remove-topic together.', EXIT_USAGE);
       }
       const target = await targetFrom(inv);
       const repo = await resolveRepo(inv, target, inv.args[0] ?? null);
+      let topics: string[] | undefined = clear ? [] : set.length ? set : undefined;
+      if (add.length || remove.length) {
+        const current = (await api(target, 'GET', repoPath(repo))).topics as string[] | undefined;
+        topics = [...new Set([...(current ?? []), ...add])].filter((t) => !remove.includes(t));
+      }
+      if (description === null && defaultBranch === null && upstream === null && topics === undefined && priv === undefined) {
+        throw new CliError(
+          'Nothing to change. Pass --description, --topic, --add-topic, --remove-topic, --clear-topics, --default-branch, --upstream, --private, or --public.',
+          EXIT_USAGE
+        );
+      }
       const data = await api(target, 'PATCH', repoPath(repo), {
         description: description ?? undefined,
+        topics,
         defaultBranch: defaultBranch ?? undefined,
         upstream: upstream ?? undefined,
         private: priv,

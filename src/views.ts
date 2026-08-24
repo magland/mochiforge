@@ -511,6 +511,8 @@ export interface RepoCard {
   collection: string;
   name: string;
   description: string | null;
+  /** The repository's topics, rendered as chips leading to /topics/<t>. */
+  topics?: string[];
   /** Shown as a badge; a private repository is only ever listed to its own readers. */
   isPrivate?: boolean;
   updated: string | null;
@@ -518,6 +520,19 @@ export interface RepoCard {
   siteUrl?: string | null;
   /** How its newest workflow run ended, for the health mark. */
   ci?: { conclusion: string | null; running: boolean; url: string } | null;
+}
+
+/**
+ * Topic chips, each leading to the vault-wide page for that topic. One look
+ * everywhere on purpose: a topic is the same topic wherever it appears, so it
+ * wears one colour from the theme rather than a colour of its own the way an
+ * issue label does.
+ */
+export function topicChips(topics: string[] | undefined): Html | '' {
+  if (!topics || topics.length === 0) return '';
+  return html`<span class="topic-chips">${joinHtml(
+    topics.map((t) => html`<a class="chip topic" href="/topics/${encodeURIComponent(t)}">${t}</a>`)
+  )}</span>`;
 }
 
 const CI_MARKS: Record<string, { glyph: IconName; label: string }> = {
@@ -555,24 +570,39 @@ function repoCard(r: RepoCard, showCollection: boolean): Html {
   const shown =
     r.description && r.description.length > 400 ? `${r.description.slice(0, 400)}…` : r.description;
   const desc = shown ? html`<p class="rc-desc">${shown}</p>` : '';
+  const topics = topicChips(r.topics);
   const when = r.updated ? html`<span class="rc-when">${timeTag(r.updated)}</span>` : '';
   const badge = r.isPrivate ? html`<span class="counter">Private</span>` : '';
   return html`<li class="repo-card">
 <div class="rc-top"><a class="rc-name" href="${href}">${prefix}${r.name}</a>${badge}<span class="rc-marks">${site}${ci}</span></div>
 ${desc}
+${topics ? html`<div class="rc-topics">${topics}</div>` : ''}
 <div class="rc-meta">${when}</div>
 </li>`;
+}
+
+/**
+ * What the reader has narrowed a repository listing to by topic, and what the
+ * listing's own links must therefore carry: the topic chosen (or '' for
+ * none), and the topics in use among the repositories the page would
+ * otherwise show, for the dropdown that does the narrowing.
+ */
+export interface TopicFilter {
+  current: string;
+  inUse: { topic: string; count: number }[];
 }
 
 /**
  * The listing itself. Sorting is a link rather than a script, so the order a
  * reader chose is in the address they can keep, and the two orders answer the
  * two questions a listing is asked: what has been happening lately, and where
- * is the one I already know the name of.
+ * is the one I already know the name of. Narrowing by topic is a link for the
+ * same reason, and each link carries the rest of the choice, so picking a
+ * sort never loses the topic and picking a topic never loses the sort.
  */
 function repoListing(
   repos: RepoCard[],
-  opts: { showCollection: boolean; sort: 'recent' | 'name'; sortBase: string }
+  opts: { showCollection: boolean; sort: 'recent' | 'name'; sortBase: string; topics?: TopicFilter }
 ): Html {
   const sorted = [...repos];
   if (opts.sort === 'name') {
@@ -580,15 +610,40 @@ function repoListing(
   } else {
     sorted.sort((a, b) => (b.updated ?? '').localeCompare(a.updated ?? ''));
   }
+  const topic = opts.topics?.current ?? '';
+  const listUrl = (sort: 'recent' | 'name', t: string) => {
+    const params = new URLSearchParams();
+    if (sort !== 'recent') params.set('sort', sort);
+    if (t !== '') params.set('topic', t);
+    const q = params.toString();
+    return q === '' ? opts.sortBase : `${opts.sortBase}?${q}`;
+  };
   const sortLink = (id: 'recent' | 'name', label: string) =>
-    html`<a${opts.sort === id ? raw(' class="current" aria-current="true"') : ''} href="${opts.sortBase}${
-      id === 'recent' ? '' : `?sort=${id}`
-    }">${label}</a>`;
+    html`<a${opts.sort === id ? raw(' class="current" aria-current="true"') : ''} href="${listUrl(id, topic)}">${label}</a>`;
+  const inUse = opts.topics?.inUse ?? [];
+  const topicMenu =
+    inUse.length !== 0 || topic !== ''
+      ? html`<details class="dropdown topic-menu">
+<summary class="btn">${icon('tag')}<span>${topic || 'Topics'}</span>${icon('chevron-down', 'caret')}</summary>
+<div class="dropdown-menu"><div class="dd-scroll">${joinHtml([
+          html`<a class="dd-item${topic === '' ? ' current' : ''}" href="${listUrl(opts.sort, '')}"><span class="dd-check"></span><span class="dd-label">Any topic</span></a>`,
+          ...inUse.map(
+            (t) =>
+              html`<a class="dd-item${topic === t.topic ? ' current' : ''}" href="${listUrl(opts.sort, t.topic)}">${
+                topic === t.topic ? icon('check', 'dd-check') : raw('<span class="dd-check"></span>')
+              }<span class="dd-label">${t.topic}</span><span class="muted small">${t.count}</span></a>`
+          ),
+        ])}</div></div>
+</details>`
+      : '';
   const controls = html`<div class="listing-controls">
 <input class="list-filter" type="text" placeholder="Filter repositories" data-target="repo-list" data-filter="cards" aria-label="Filter repositories">
+${topicMenu}
 <span class="seg">${sortLink('recent', 'Recent')}${sortLink('name', 'A–Z')}</span>
 </div>`;
-  return html`${repos.length > 5 ? controls : ''}<ul class="repo-grid" id="repo-list">${joinHtml(
+  // The controls stay once a topic is chosen, whatever the count: a narrowing
+  // that hides the way back out would be a trap.
+  return html`${repos.length > 5 || topic !== '' ? controls : ''}<ul class="repo-grid" id="repo-list">${joinHtml(
     sorted.map((r) => repoCard(r, opts.showCollection)),
     '\n'
   )}</ul>${noMatches('repo-list')}`;
@@ -599,7 +654,8 @@ export function homePage(
   collections: { name: string; repoCount: number }[],
   repos: RepoCard[],
   sort: 'recent' | 'name',
-  viewer: Viewer | null
+  viewer: Viewer | null,
+  topics: TopicFilter = { current: '', inUse: [] }
 ): string {
   const total = repos.length;
   const chips = collections.length
@@ -612,10 +668,12 @@ export function homePage(
     : '';
   const body =
     total === 0
-      ? html`<div class="empty-state">No repositories yet.${
-          viewer ? ' Create one with the buttons above, or push to a new path.' : ''
-        }</div>`
-      : repoListing(repos, { showCollection: true, sort, sortBase: '/' });
+      ? topics.current !== ''
+        ? html`<div class="empty-state">No repositories carry the topic <b>${topics.current}</b>. <a href="/">Show all</a>.</div>`
+        : html`<div class="empty-state">No repositories yet.${
+            viewer ? ' Create one with the buttons above, or push to a new path.' : ''
+          }</div>`
+      : repoListing(repos, { showCollection: true, sort, sortBase: '/', topics });
   const newBtn = viewer
     ? html`<a class="btn" href="/new/collection">${icon('plus')}<span>New collection</span></a><a class="btn btn-primary" href="/new">${icon(
         'plus'
@@ -624,9 +682,11 @@ export function homePage(
   const summary =
     total === 0
       ? ''
-      : html`<p class="lede">${total} ${total === 1 ? 'repository' : 'repositories'} in ${collections.length} ${
-          collections.length === 1 ? 'collection' : 'collections'
-        }.</p>`;
+      : topics.current !== ''
+        ? html`<p class="lede">${total} ${total === 1 ? 'repository' : 'repositories'} with the topic <b>${topics.current}</b>.</p>`
+        : html`<p class="lede">${total} ${total === 1 ? 'repository' : 'repositories'} in ${collections.length} ${
+            collections.length === 1 ? 'collection' : 'collections'
+          }.</p>`;
   const content = html`<div class="page-head"><h1>Repositories</h1><span class="right-group">${newBtn}</span></div>
 ${summary}
 ${chips}
@@ -690,17 +750,21 @@ export function collectionPage(
   profile: CollectionProfile | null = null,
   // Present when a vault user bears the collection's name: the page is then
   // their profile page too, and this is what the profile part shows.
-  owner: ProfileOwner | null = null
+  owner: ProfileOwner | null = null,
+  topics: TopicFilter = { current: '', inUse: [] }
 ): string {
   const body =
     repoList.length === 0
-      ? html`<div class="empty-state">No repositories in this collection yet.${
-          viewer ? ' Create one with the buttons above, or push to a new path.' : ''
-        }</div>`
+      ? topics.current !== ''
+        ? html`<div class="empty-state">No repositories here carry the topic <b>${topics.current}</b>. <a href="/${encodeURIComponent(collection)}">Show all</a>.</div>`
+        : html`<div class="empty-state">No repositories in this collection yet.${
+            viewer ? ' Create one with the buttons above, or push to a new path.' : ''
+          }</div>`
       : repoListing(repoList, {
           showCollection: false,
           sort,
           sortBase: `/${encodeURIComponent(collection)}`,
+          topics,
         });
   const settingsBtn = canAdminCollection
     ? html`<a class="btn" href="/${encodeURIComponent(collection)}/settings">${icon('sliders')}<span>Settings</span></a>`
@@ -760,6 +824,49 @@ export function collectionPage(
   });
 }
 
+/**
+ * Every topic in use across the vault, as this viewer sees it: the same
+ * repositories the front page would list, counted rather than repeated. The
+ * page exists so a topic chip has somewhere vault-wide to lead, and so the
+ * set of topics can be surveyed without opening repositories to collect it.
+ */
+export function topicsIndexPage(topics: { topic: string; count: number }[], viewer: Viewer | null): string {
+  const body =
+    topics.length === 0
+      ? html`<div class="empty-state">No repository carries a topic yet.${
+          viewer ? ' Add some from a repository’s About panel or settings.' : ''
+        }</div>`
+      : html`<ul class="topic-index">${joinHtml(
+          topics.map(
+            (t) =>
+              html`<li><a class="chip topic" href="/topics/${encodeURIComponent(t.topic)}">${t.topic}</a><span class="muted small">${
+                t.count
+              } ${t.count === 1 ? 'repository' : 'repositories'}</span></li>`
+          ),
+          '\n'
+        )}</ul>`;
+  const content = html`<div class="page-head"><h1>Topics</h1></div>
+<p class="lede">What the repositories in this vault say they are about, across every collection.</p>
+${body}`;
+  return layout('Topics', content, { viewer, path: '/topics' });
+}
+
+/** One topic's page: every visible repository carrying it, vault-wide. */
+export function topicPage(topic: string, repos: RepoCard[], sort: 'recent' | 'name', viewer: Viewer | null): string {
+  const body =
+    repos.length === 0
+      ? html`<div class="empty-state">No repository carries this topic. <a href="/topics">All topics</a>.</div>`
+      : repoListing(repos, { showCollection: true, sort, sortBase: `/topics/${encodeURIComponent(topic)}` });
+  const content = html`<div class="page-head"><h1 class="topic-title">${icon('tag')}${topic}</h1></div>
+<p class="lede">${repos.length} ${repos.length === 1 ? 'repository' : 'repositories'} with this topic &middot; <a href="/topics">all topics</a></p>
+${body}`;
+  return layout(`${topic} - Topics`, content, {
+    crumbs: html` / <a href="/topics">topics</a> / <a href="/topics/${encodeURIComponent(topic)}">${topic}</a>`,
+    viewer,
+    path: `/topics/${encodeURIComponent(topic)}`,
+  });
+}
+
 export interface TreeView {
   path: string;
   entries: TreeEntry[];
@@ -769,6 +876,7 @@ export interface TreeView {
   latest: CommitSummary | null;
   commitCount: number;
   description: string | null;
+  topics: string[];
   readmeHtml: string | null;
   readmeName: string | null;
   /** The language breakdown, measured at the root only and empty elsewhere. */
@@ -881,6 +989,28 @@ function aboutPanel(ctx: RepoCtx, view: TreeView): Html {
   const description = view.description
     ? html`<p class="side-desc">${view.description}</p>`
     : html`<p class="side-desc muted">No description provided.</p>`;
+  // Topics, and for a writer the place to change them without leaving the
+  // page: a details element holding the one-line form, so the editor costs no
+  // script and appears only when opened. The form posts the whole set, which
+  // is what the API takes too.
+  const topicEditor =
+    ctx.canPush && ctx.viewer
+      ? html`<details class="dropdown topic-edit"><summary class="chip topic-add" title="Edit topics" aria-label="Edit topics">${
+          view.topics.length ? icon('pencil') : html`${icon('plus')}<span>Add topics</span>`
+        }</summary>
+<div class="dropdown-menu dd-right topic-edit-menu"><form method="post" action="${repoUrl(ctx)}/settings/topics">
+${csrfField(ctx.viewer)}
+<input type="hidden" name="next" value="repo">
+<label class="muted small" for="side-topics">Topics, separated by spaces</label>
+<input type="text" id="side-topics" name="topics" value="${view.topics.join(' ')}" placeholder="webgpu numbl mri">
+<p class="muted small">Lowercase letters, digits, and hyphens.</p>
+<button type="submit" class="btn btn-primary">${icon('check')}<span>Save</span></button>
+</form></div></details>`
+      : '';
+  const topicsRow =
+    view.topics.length || topicEditor
+      ? html`<div class="side-topics">${topicChips(view.topics)}${topicEditor}</div>`
+      : '';
   const facts = [
     html`<a href="${base}/commits/${encPath(ctx.ref)}">${icon('history')}<span>${count(view.commitCount)} commit${
       view.commitCount === 1 ? '' : 's'
@@ -897,6 +1027,7 @@ function aboutPanel(ctx: RepoCtx, view: TreeView): Html {
 <div class="side-block">
   <h3>About${settings}</h3>
   ${description}
+  ${topicsRow}
   ${links.length ? html`<div class="side-links">${links}</div><hr class="rule">` : ''}
   <div class="side-links">${facts}</div>
 </div>

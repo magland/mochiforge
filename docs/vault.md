@@ -19,7 +19,8 @@ A vault is a plain directory. Its collections are in `collections/`, and a colle
         .mochi.git/         (the collection's profile README; see below)
         hello-numerics.git/     (bare repository)
         hello-numerics.runs/    (its workflow runs and logs)
-        webapp.git/             (holds mochi.json: visibility and collaborators)
+        webapp.git/             (holds mochi.json: visibility and collaborators;
+                                 and topics: the repository's topics, one per line)
         webapp.site/            (static site for webapp)
         webapp.issues/          (its issues, one directory each)
         webapp.pulls/           (its pull requests, one directory each)

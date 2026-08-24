@@ -39,6 +39,7 @@ import {
   setRepoPrivate,
 } from '../perms';
 import { findRepo, isValidName, reservedRepoSuffix, upstreamOf } from '../scan';
+import { repoTopics, setTopics } from '../topics';
 import { loadVault } from '../vault';
 import {
   Actor,
@@ -52,6 +53,7 @@ import {
   requireRepoAdmin,
   sendOpError,
   stringField,
+  stringsField,
 } from './auth';
 
 // Writing a repository over the API: files, commits, branches, tags, and the
@@ -450,13 +452,18 @@ export function registerWriteApi(
     const description = stringField(body, 'description');
     const defaultBranch = stringField(body, 'defaultBranch');
     const upstream = stringField(body, 'upstream');
+    const topics = stringsField(body, 'topics');
+    if (topics === null) {
+      apiError(res, 400, '"topics" must be a list of strings');
+      return;
+    }
     const priv = body.private;
     if (priv !== undefined && typeof priv !== 'boolean') {
       apiError(res, 400, '"private" must be a boolean');
       return;
     }
-    if (description === null && defaultBranch === null && upstream === null && priv === undefined) {
-      apiError(res, 400, 'nothing to change; provide "description", "defaultBranch", "upstream", and/or "private"');
+    if (description === null && defaultBranch === null && upstream === null && topics === undefined && priv === undefined) {
+      apiError(res, 400, 'nothing to change; provide "description", "defaultBranch", "upstream", "topics", and/or "private"');
       return;
     }
     // Visibility is the one setting here that takes the admin role rather than
@@ -470,6 +477,7 @@ export function registerWriteApi(
       if (description !== null) setDescription(ctx.repo.dir, description);
       if (defaultBranch !== null) await setDefaultBranch(ctx.repo.dir, defaultBranch);
       if (upstream !== null) await setUpstream(ctx.repo.dir, upstream);
+      if (topics !== undefined) setTopics(ctx.repo.dir, topics);
       if (priv !== undefined) setRepoPrivate(ctx.repo.dir, priv);
       const branches = await ctx.repo.listRefs('heads');
       res.json({
@@ -477,6 +485,7 @@ export function registerWriteApi(
         name: ctx.repo.name,
         defaultBranch: await ctx.repo.defaultBranch(branches),
         upstream: upstreamOf(ctx.repo.dir)?.url ?? null,
+        topics: repoTopics(ctx.repo.dir),
         private: repoIsPrivate(ctx.repo.dir),
         changed: true,
       });

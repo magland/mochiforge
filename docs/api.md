@@ -90,14 +90,18 @@ All three take a site admin: a collection owner should not read or change a vaul
 ## Repositories
 
 ```
-GET    /api/repos                                  every repository the caller may see, flat
-GET    /api/repos/:c/:r                            one repository: description, default branch,
+GET    /api/repos                                  every repository the caller may see, flat;
+                                                   ?topic=<t> keeps only those carrying the topic
+GET    /api/repos/:c/:r                            one repository: description, topics, default branch,
                                                    counts, fork parent, upstream URL, visibility,
                                                    whether it has a site
+GET    /api/topics                                 every topic in use, with how many repositories
+                                                   the caller may see carry each
 POST   /api/repos                                  create   {collection, name, description?, initReadme?, private?}
-PATCH  /api/repos/:c/:r                            settings {description?, defaultBranch?, upstream?, private?}
+PATCH  /api/repos/:c/:r                            settings {description?, topics?, defaultBranch?, upstream?, private?}
                                                    (private takes the admin role; the rest take write;
-                                                   upstream is an https or ssh git URL, '' clears it)
+                                                   upstream is an https or ssh git URL, '' clears it;
+                                                   topics is the whole set as a list of strings)
 POST   /api/repos/:c/:r/fork                       fork     {collection, name?}
                                                    (read on the source, create where it lands)
 POST   /api/repos/:c/:r/rename                     rename   {name?, collection?}          (admin;
@@ -116,6 +120,8 @@ GET    /api/repos/:c/:r/site                       whether a site exists, its fi
 ```
 
 `GET /api/repos/:c/:r` also carries `private`, `role` (the caller's, or null), and `canPush`, so a caller need not discover what it may do by being refused. A private repository the caller has no role on is left out of `GET /api/repos` and answers 404 everywhere else, exactly as an absent one would.
+
+A topic is lowercase letters, digits, and hyphens, starting with a letter or digit, at most 50 characters, and a repository carries at most 20; anything else is refused rather than rewritten. `topics` on PATCH replaces the whole set, as it does on GitHub, so add-one and remove-one are a caller's read-modify-write; `[]` clears them. There is no topic registry: a topic exists while some repository carries it, and `GET /api/topics` is the count of what does.
 
 Forking takes read access to the source and permission to create in the collection the fork lands in. A fork of a private repository starts private.
 

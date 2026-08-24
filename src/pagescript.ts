@@ -149,11 +149,13 @@ var jumpSel = 0;
 function loadJumpRepos() {
   if (jumpRepos) return Promise.resolve(jumpRepos);
   var cached = null;
-  try { cached = sessionStorage.getItem('mochi.repos'); } catch (e) {}
+  // The key carries a version: the entries grew topics, and a tab holding the
+  // older list of bare names would otherwise feed it to code expecting objects.
+  try { cached = sessionStorage.getItem('mochi.repos.v2'); } catch (e) {}
   if (cached) { try { jumpRepos = JSON.parse(cached); return Promise.resolve(jumpRepos); } catch (e) {} }
   return fetch('/assets/repos.json').then(function (r) { return r.json(); }).then(function (list) {
     jumpRepos = list;
-    try { sessionStorage.setItem('mochi.repos', JSON.stringify(list)); } catch (e) {}
+    try { sessionStorage.setItem('mochi.repos.v2', JSON.stringify(list)); } catch (e) {}
     return list;
   }, function () { jumpRepos = []; return jumpRepos; });
 }
@@ -189,17 +191,27 @@ function jumpItems() {
   }
   var repos = jumpRepos || [];
   for (var i = 0; i < repos.length; i++) {
-    var name = repos[i];
+    var entry = repos[i];
+    var name = typeof entry === 'string' ? entry : entry.name;
+    var topics = (entry && entry.topics) || [];
     var slash = name.indexOf('/');
     var short = name.slice(slash + 1);
+    var note = name.slice(0, slash);
     var sc = jumpScore(short, q);
     // Falling back to the whole path lets "concept/bench" find a repository,
     // but only as a literal substring: a collection name spread across it a
     // letter at a time would match nearly everything.
     if (sc < 0 && q !== '' && name.toLowerCase().indexOf(q) !== -1) sc = 950;
+    // Last, the topics: typing one finds what carries it, below any match on
+    // a name, and the note says which topic answered.
+    if (sc < 0 && q !== '') {
+      for (var t = 0; t < topics.length; t++) {
+        if (topics[t].indexOf(q) !== -1) { sc = 960; note = note + ' · ' + topics[t]; break; }
+      }
+    }
     // A repository is what the box is mostly for, so its matches sort above a
     // section of equal quality rather than below.
-    if (sc >= 0) out.push({ score: sc - 1, group: 'Repositories', label: short, note: name.slice(0, slash), href: '/' + name.split('/').map(encodeURIComponent).join('/') });
+    if (sc >= 0) out.push({ score: sc - 1, group: 'Repositories', label: short, note: note, href: '/' + name.split('/').map(encodeURIComponent).join('/') });
   }
   out.sort(function (a, b) { return a.score - b.score || a.label.localeCompare(b.label); });
   out = out.slice(0, 15);

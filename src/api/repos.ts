@@ -5,6 +5,7 @@ import { AuthLimiter } from '../limit';
 import { repoPath } from '../layout';
 import { atLeast, repoIsPrivate, repoRole } from '../perms';
 import { displayName, forkParent, listCollections, listRepoDirs, repoDescription, siteDir, upstreamOf } from '../scan';
+import { countTopics, isValidTopic, repoTopics } from '../topics';
 import { issueCounts } from '../issues';
 import { pullCounts } from '../pulls';
 import { listReleases } from '../releases';
@@ -20,6 +21,7 @@ export interface RepoSummary {
   collection: string;
   name: string;
   description: string;
+  topics: string[];
   forkedFrom: { collection: string; repo: string } | null;
   /** The URL outside this vault the repository was forked from, if recorded. */
   upstream: string | null;
@@ -34,6 +36,7 @@ function summarize(root: string, collection: string, dirName: string): RepoSumma
     collection,
     name,
     description: repoDescription(dir) ?? '',
+    topics: repoTopics(dir),
     forkedFrom: forkParent(dir),
     upstream: upstreamOf(dir)?.url ?? null,
     hasSite: siteDir(root, collection, name) !== null,
@@ -45,10 +48,16 @@ export function registerRepoApi(app: Express, root: string, limiter: AuthLimiter
   // Every repository in the vault, flat. A vault's collections are small and
   // this is read off disk per request, so there is no pagination: --limit and
   // the server-side caps are enough, and a cursor protocol would be machinery
-  // with nothing to carry.
+  // with nothing to carry. ?topic= narrows the list to repositories carrying
+  // that topic, which is the one cross-repository query topics exist for.
   app.get('/api/repos', (req, res) => {
     const auth = requireApiAuth(root, limiter, req, res);
     if (!auth) return;
+    const topic = typeof req.query.topic === 'string' ? req.query.topic : '';
+    if (topic !== '' && !isValidTopic(topic)) {
+      apiError(res, 400, 'a topic is lowercase letters, digits, and hyphens, starting with a letter or digit');
+      return;
+    }
     const repos: RepoSummary[] = [];
     for (const c of listCollections(root)) {
       for (const dirName of listRepoDirs(root, c.name)) {
@@ -56,10 +65,27 @@ export function registerRepoApi(app: Express, root: string, limiter: AuthLimiter
         // A private repository the caller has no role on is not listed, the
         // same way its page 404s.
         if (repoRole(root, auth, { collection: c.name, name: displayName(dirName), dir }) === null) continue;
+        if (topic !== '' && !repoTopics(dir).includes(topic)) continue;
         repos.push(summarize(root, c.name, dirName));
       }
     }
     res.json({ repos });
+  });
+
+  // Every topic in use, with how many repositories carry each: only what the
+  // caller could see listed anyway, counted rather than repeated.
+  app.get('/api/topics', (req, res) => {
+    const auth = requireApiAuth(root, limiter, req, res);
+    if (!auth) return;
+    const lists: string[][] = [];
+    for (const c of listCollections(root)) {
+      for (const dirName of listRepoDirs(root, c.name)) {
+        const dir = repoPath(root, c.name, dirName);
+        if (repoRole(root, auth, { collection: c.name, name: displayName(dirName), dir }) === null) continue;
+        lists.push(repoTopics(dir));
+      }
+    }
+    res.json({ topics: countTopics(lists) });
   });
 
   app.get('/api/repos/:collection/:repo', async (req, res) => {
