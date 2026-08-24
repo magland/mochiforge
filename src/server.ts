@@ -25,7 +25,7 @@ import { migrateLayout, migratePermissions } from './migrate';
 import { repoRole } from './perms';
 import { registerRedirects } from './redirects';
 import { displayName, listCollections, listRepoDirs } from './scan';
-import { getViewer } from './session';
+import { getViewer, renewSession } from './session';
 import { registerSiteHost } from './site';
 import { isUnderSitesHost } from './siteshost';
 import { styleSheet } from './assets';
@@ -380,6 +380,16 @@ export function createApp(root: string) {
   // whose runner is not connected and pokes that runner's wake address.
   // Runners without one are unaffected, which is all of them by default.
   startWakeDispatcher(root, engine);
+
+  // Sliding sessions: a session cookie seen in the second half of its life is
+  // re-issued with a fresh expiry, so regular use never runs into a sign-out.
+  // Registered after the asset routes above on purpose -- several of them are
+  // publicly cacheable, and a Set-Cookie must never ride on a response a
+  // shared cache may store and replay to someone else.
+  app.use((req, res, next) => {
+    renewSession(req, res, root);
+    next();
+  });
 
   // Registration order matters: the API and the UI-owned top-level paths
   // (/login, /new, /admin, ...) come before the generic /:collection and /:collection/:repo

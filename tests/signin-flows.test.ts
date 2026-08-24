@@ -7,6 +7,7 @@ import type { Server } from 'http';
 import { makeVaultDir } from './helpers';
 import { createApp } from '../src/server';
 import { addUserToken, authForBinding, loadVault, passkeyBinding } from '../src/vault';
+import { getSecret } from '../src/session';
 import { COSE_ES256 } from '../src/webauthn';
 
 // The three sign-in flows, driven over real HTTP against a real vault
@@ -332,5 +333,71 @@ describe('mochi web login links over HTTP', () => {
       body: new URLSearchParams({ code }),
     });
     assert.equal(redeem.status, 403);
+  });
+});
+
+describe('sliding session renewal', () => {
+  // Re-sign a real session cookie with a different expiry, using the vault's
+  // own secret: the payload is what the server minted, only `exp` changes.
+  function withExp(cookie: string, exp: number): string {
+    const eq = cookie.indexOf('=');
+    const name = cookie.slice(0, eq);
+    const value = cookie.slice(eq + 1);
+    const dot = value.lastIndexOf('.');
+    const payload = JSON.parse(Buffer.from(value.slice(0, dot), 'base64url').toString('utf8'));
+    payload.exp = exp;
+    const body = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+    const sig = crypto.createHmac('sha256', getSecret(root)).update(body).digest('base64url');
+    return `${name}=${body}.${sig}`;
+  }
+
+  function payloadOf(setCookie: string): { u: string; exp: number; csrf: string; t: string } {
+    const value = setCookie.slice(setCookie.indexOf('=') + 1);
+    return JSON.parse(Buffer.from(value.slice(0, value.lastIndexOf('.')), 'base64url').toString('utf8'));
+  }
+
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it('re-issues a cookie seen in the second half of its life, keeping identity and csrf', async () => {
+    const cookie = await signInWithToken();
+    const before = payloadOf(cookie);
+    const stale = withExp(cookie, Date.now() + 5 * DAY);
+    const res = await fetch(`${base}/account`, { headers: { cookie: stale } });
+    assert.equal(res.status, 200);
+    const renewed = res.headers.get('set-cookie');
+    assert.ok(renewed, 'expected a renewed session cookie');
+    const after = payloadOf(renewed);
+    assert.equal(after.u, before.u);
+    assert.equal(after.csrf, before.csrf);
+    assert.equal(after.t, before.t);
+    assert.ok(after.exp > Date.now() + 29 * DAY, 'expiry pushed out to a full term');
+  });
+
+  it('leaves a cookie in the first half of its life alone', async () => {
+    const cookie = await signInWithToken();
+    const fresh = withExp(cookie, Date.now() + 29 * DAY);
+    const res = await fetch(`${base}/account`, { headers: { cookie: fresh } });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('set-cookie'), null);
+  });
+
+  it('does not renew a session whose token has been revoked', async () => {
+    const extra = addUserToken(root, 'owner', {});
+    const login = await fetch(`${base}/login`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ username: 'owner', token: extra.token, next: '/' }),
+    });
+    assert.equal(login.status, 302);
+    const stale = withExp(cookieOf(login), Date.now() + 5 * DAY);
+    const file = path.join(root, 'vault.json');
+    const vaultJson = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const hash = crypto.createHash('sha256').update(extra.token).digest('hex');
+    vaultJson.users.owner.tokens = vaultJson.users.owner.tokens.filter((t: { hash: string }) => t.hash !== hash);
+    fs.writeFileSync(file, JSON.stringify(vaultJson));
+    const res = await fetch(`${base}/account`, { redirect: 'manual', headers: { cookie: stale } });
+    assert.equal(res.headers.get('set-cookie'), null);
+    assert.notEqual(res.status, 200);
   });
 });

@@ -37,6 +37,9 @@ import { AuthResult, authForBinding, loadVault } from './vault';
 const HOST_COOKIE_NAME = '__Host-mochi_session';
 const COOKIE_NAME = 'mochi_session';
 const cookieName = (req: Request) => (req.protocol === 'https' ? HOST_COOKIE_NAME : COOKIE_NAME);
+// Effectively an idle limit rather than a hard one: renewSession below
+// re-issues a cookie seen in the second half of its life, so only a session
+// unused for this long actually expires.
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 
 interface SessionPayload {
@@ -92,14 +95,7 @@ function onSitesHost(req: Request, root: string): boolean {
   return isUnderSitesHost(loadConfig(root).sites.host, req.hostname);
 }
 
-export function setSessionCookie(req: Request, res: Response, root: string, auth: AuthResult): void {
-  if (onSitesHost(req, root)) return;
-  const payload: SessionPayload = {
-    u: auth.username,
-    exp: Date.now() + SESSION_MS,
-    csrf: crypto.randomBytes(16).toString('hex'),
-    t: auth.token.hash,
-  };
+function writeSessionCookie(req: Request, res: Response, root: string, payload: SessionPayload): void {
   const body = b64url(Buffer.from(JSON.stringify(payload), 'utf8'));
   res.cookie(cookieName(req), `${body}.${sign(root, body)}`, {
     httpOnly: true,
@@ -108,6 +104,37 @@ export function setSessionCookie(req: Request, res: Response, root: string, auth
     maxAge: SESSION_MS,
     path: '/',
   });
+}
+
+export function setSessionCookie(req: Request, res: Response, root: string, auth: AuthResult): void {
+  if (onSitesHost(req, root)) return;
+  writeSessionCookie(req, res, root, {
+    u: auth.username,
+    exp: Date.now() + SESSION_MS,
+    csrf: crypto.randomBytes(16).toString('hex'),
+    t: auth.token.hash,
+  });
+}
+
+/**
+ * A session in use is kept alive. A request arriving in the second half of the
+ * cookie's life gets a fresh cookie carrying the same identity, credential
+ * binding, and csrf value (so a form already open in another tab still
+ * submits), with the expiry pushed out to a full SESSION_MS again. An account
+ * visited more often than every SESSION_MS therefore never sees a sign-out,
+ * while a session left idle still dies on schedule. The renewal re-resolves
+ * the credential against live vault.json first: a session whose token or
+ * passkey has been revoked is not given a fresh cookie on its way out.
+ */
+export function renewSession(req: Request, res: Response, root: string): void {
+  if (onSitesHost(req, root)) return;
+  const session = readSession(req, root);
+  if (!session) return;
+  if (session.exp - Date.now() > SESSION_MS / 2) return;
+  const state = loadVault(root);
+  if (state.status !== 'ok') return;
+  if (!authForBinding(state.vault, session.u, session.t)) return;
+  writeSessionCookie(req, res, root, { ...session, exp: Date.now() + SESSION_MS });
 }
 
 // Both names, since a session minted before the prefix existed, or over http
