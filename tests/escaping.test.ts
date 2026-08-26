@@ -51,6 +51,7 @@ function ctxFor(overrides: Partial<RepoCtx> = {}): RepoCtx {
     openIssues: 0,
     openPulls: 0,
     forkedFrom: null,
+    upstream: null,
     viewer,
     isPrivate: false,
     canPush: true,
@@ -164,7 +165,7 @@ test('a file being edited is escaped in the textarea and the path field', () => 
 test('a repository description is escaped on the settings page', () => {
   assertSafe(
     forms.settingsPage(
-      ctxFor({ isPrivate: true }),
+      ctxFor({ isPrivate: true, upstream: { url: XSS, label: XSS, web: null, github: null } }),
       XSS,
       [XSS],
       { collaborators: [{ username: XSS, role: XSS }], owners: [XSS] },

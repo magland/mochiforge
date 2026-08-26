@@ -1816,6 +1816,11 @@ export function registerWebOps(
         if ((req.body as Record<string, unknown>).topics !== undefined) {
           setTopics(loaded.repo.dir, parseTopicsInput(field(req, 'topics')));
         }
+        // Same guard as topics: an absent field means an older or other form,
+        // not a request to clear the upstream.
+        if ((req.body as Record<string, unknown>).upstream !== undefined) {
+          await ops.setUpstream(loaded.repo.dir, field(req, 'upstream').trim());
+        }
       } catch (e) {
         if (e instanceof OpError) {
           fail(res, opErrorStatus(e.kind), e.message, viewer, backUrl);

@@ -351,7 +351,7 @@ mochi import https://github.com/owner/repo mycollection --lfs
 
 Note that nothing about this happens on the server. A vault that imported on your behalf would need outbound network access, credentials for other services, a disk budget, and work that outlives a request, none of which this project has; doing it from your machine needs none of it, and progress and cancellation come from your terminal. The cost is that the data passes through your machine, and that importing many repositories is a shell loop rather than a form.
 
-The **Import** button on a collection page writes out the same commands, filled in with that collection and this vault's URL, for copying into a terminal. It also carries the two git commands the import is made of, for a machine with no Node on it:
+The **Import or fork** button on a collection page writes out the same commands, and `mochi fork` beside them, filled in with that collection and this vault's URL, for copying into a terminal. It also carries the two git commands the import is made of, for a machine with no Node on it:
 
 ```bash
 tmp="$(mktemp -d /tmp/import.XXXXXX)" && \
@@ -383,7 +383,7 @@ mochi sync                                  # fast-forward from the upstream
 mochi pr export 3                           # send pull request 3 on to GitHub
 ```
 
-`mochi fork` is `mochi import` plus a memory: the source URL is recorded as the repository's upstream (`mochi.upstream` in the bare repository's config), which the repository header shows as "forked from", and which the other two commands read. It takes the same options as import, and refuses a local directory, which has no URL to record. On a repository imported before this existed, or created some other way, `mochi repo edit --upstream <url>` records one after the fact, and `--upstream ''` clears it.
+`mochi fork` is `mochi import` plus a memory: the source URL is recorded as the repository's upstream (`mochi.upstream` in the bare repository's config), which the repository header shows as "forked from", and which the other two commands read. It takes the same options as import, and refuses a local directory, which has no URL to record. On a repository imported before this existed, or created some other way, `mochi repo edit --upstream <url>` records one after the fact, and `--upstream ''` clears it; the Upstream field on the repository's settings page does the same in the browser.
 
 `mochi sync` keeps the fork from rotting: it fetches the branch from the upstream URL with whatever git credentials this machine already has, and pushes the result to the vault with your token. Only a fast-forward is ever pushed. A branch that is ahead of its upstream is reported as such and left alone, and one that has diverged is refused with the two counts, since deciding how to reconcile it is a merge or a rebase in a clone, not something a sync should guess at. The branch defaults to the repository's default branch; `--branch` names another.
 

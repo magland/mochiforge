@@ -311,13 +311,15 @@ ${csrfField(viewer)}
 }
 
 /**
- * The import page. Importing has always run on the reader's machine rather than
- * on the server, and what this page does is hand them the command
- * that does it. Earlier it asked for the source in a form and wrote a shell
+ * The import-or-fork page. Both operations run on the reader's machine rather
+ * than on the server, and what this page does is hand them the command that
+ * does it. Earlier it asked for the source in a form and wrote a shell
  * one-liner from the answers, which put a form in front of an operation the
- * page cannot perform; now `mochi import` performs it, so the page only has
- * to say what to run, with the collection and the vault's own URL filled in.
- * The git commands remain below for a machine with no Node on it.
+ * page cannot perform; now `mochi fork` and `mochi import` perform it, so the
+ * page only has to say what to run, with the collection and the vault's own
+ * URL filled in. The two commands do the same copy; the difference is that a
+ * fork records where it came from, so the page is organized around that one
+ * question. The git commands remain below for a machine with no Node on it.
  */
 export function importPage(
   viewer: Viewer,
@@ -330,23 +332,29 @@ export function importPage(
   const fallback = opts.gitCommand
     ? html`<hr class="rule">
 <h2>Without the CLI</h2>
-<p class="muted small">The same two steps by hand. Replace the source URL, and the name after the collection if you want one other than the source's.</p>
+<p class="muted small">The same two steps by hand. Replace the source URL, and the name after the collection if you want one other than the source's. This makes an import; to turn it into a fork, record the upstream in the repository's settings afterwards.</p>
 ${copyRow(opts.gitCommand)}`
     : '';
   const content = html`<div class="form-box wide">
-<h1>Import a repository</h1>
-<p class="muted">Importing runs on your machine, not on this server: git reads the source with the credentials you already have there and pushes it here, which creates the repository. The <span class="mono">mochi</span> command does both.</p>
+<h1>Import or fork a repository</h1>
+<p class="muted">Both copy a repository from outside this vault into it, and both run on your machine, not on this server: git reads the source with the credentials you already have there and pushes it here, which creates the repository. The <span class="mono">mochi</span> command does both. The difference is memory: a fork records where it came from, an import does not.</p>
 <hr class="rule">
 <h2>Once per machine</h2>
 ${copyRow('npm install -g @magland/mochi')}
 ${copyRow(`mochi login ${opts.vaultUrl}`)}
-<h2>Then, for each repository</h2>
+<h2>Fork: a copy that remembers its source</h2>
+${copyRow(`mochi fork https://github.com/owner/repo ${collection}`)}
+<p class="muted small">The source URL is recorded as the repository's upstream: the header shows &ldquo;forked from&rdquo;, <span class="mono">mochi sync</span> fast-forwards a branch from it, and <span class="mono">mochi pr export</span> sends a pull request back to it. When the source keeps living where it is, this is usually what you want.</p>
+<h2>Import: a copy that stands on its own</h2>
 ${copyRow(`mochi import https://github.com/owner/repo ${collection}`)}
-<p class="muted small">The source may be an https or ssh git URL, or <span class="mono">owner/repo</span> for GitHub. The repository takes its name from the source; write <span class="mono">${collection}/another-name</span> to choose another. Add <span class="mono">--lfs</span> to carry Git LFS objects too. A collection that does not exist yet is created by the push. A public GitHub source also has its description read from GitHub and set here.</p>
+<p class="muted small">Nothing is recorded about the source. For a repository whose home this vault becomes, or for a local directory (<span class="mono">mochi import ~/work/repo ${collection}</span>), which has no URL to record.</p>
+<hr class="rule">
+<p class="muted small">For either command, the source may be an https or ssh git URL, or <span class="mono">owner/repo</span> for GitHub. The repository takes its name from the source; write <span class="mono">${collection}/another-name</span> to choose another. Add <span class="mono">--lfs</span> to carry Git LFS objects too. A collection that does not exist yet is created by the push. A public GitHub source also has its description read from GitHub and set here.</p>
+<p class="muted small">An import becomes a fork after the fact: set the upstream URL in the repository's settings, or run <span class="mono">mochi repo edit ${collection}/name --upstream &lt;url&gt;</span>. And a repository already in this vault is forked with the Fork button on its own page, which copies it without leaving the server.</p>
 ${fallback}
 ${back}
 </div>`;
-  return layout('Import a repository', content, { viewer, path: '/import' });
+  return layout('Import or fork a repository', content, { viewer, path: '/import' });
 }
 
 /**
@@ -720,6 +728,9 @@ ${csrfField(ctx.viewer!)}
 <div class="field"><label for="description">Description</label><input type="text" id="description" name="description" value="${description}"><p class="muted small">Shown beside the repository in listings and in the About panel.</p></div>
 <div class="field"><label for="topics">Topics</label><input type="text" id="topics" name="topics" value="${topics.join(' ')}" placeholder="webgpu numbl mri"><p class="muted small">Separated by spaces or commas: lowercase letters, digits, and hyphens, up to 20. Listings can be narrowed by topic, and each topic has a page across the vault.</p></div>
 ${defaultBranchField}
+<div class="field"><label for="upstream">Upstream</label><input type="text" id="upstream" name="upstream" value="${
+        ctx.upstream?.url ?? ''
+      }" placeholder="https://github.com/owner/repo"><p class="muted small">The URL outside this vault this repository was forked from: the header shows it as &ldquo;forked from&rdquo;, <span class="mono">mochi sync</span> fast-forwards from it, and <span class="mono">mochi pr export</span> sends pull requests back to it. An https or ssh git URL; leave empty for a repository that stands on its own.</p></div>
 <button type="submit" class="btn btn-primary">${icon('check')}<span>Save</span></button>
 </form>
 </div></div>`

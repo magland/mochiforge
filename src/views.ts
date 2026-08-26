@@ -772,7 +772,7 @@ export function collectionPage(
   const newBtn = viewer
     ? html`<a class="btn" href="/import?collection=${encodeURIComponent(collection)}">${icon(
         'download'
-      )}<span>Import</span></a><a class="btn btn-primary" href="/new?collection=${encodeURIComponent(
+      )}<span>Import or fork</span></a><a class="btn btn-primary" href="/new?collection=${encodeURIComponent(
         collection
       )}">${icon('plus')}<span>New repository</span></a>`
     : '';
