@@ -53,21 +53,39 @@ import {
 import {
   UserRecord,
   addPasskey,
+  approveGithub,
   authForBinding,
   authenticate,
+  findGithubAccount,
   findPasskey,
+  githubBinding,
+  linkGithub,
   loadVault,
   addUserToken,
   passkeyBinding,
   removePasskey,
   removeUser,
+  resolveGithubSignIn,
   revokeToken,
   setPasskeyCounter,
   setSiteAdmin,
   setUserEmails,
   setUserProfile,
   tokenId,
+  unapproveGithub,
+  unlinkGithub,
 } from './vault';
+import {
+  clearGithubSecret,
+  exchangeGithubCode,
+  fetchGithubUser,
+  githubAuthorizeUrl,
+  githubConfigured,
+  isPlausibleGithubLogin,
+  lookupGithubLogin,
+  readGithubSecret,
+  writeGithubSecret,
+} from './githubauth';
 import {
   SUPPORTED_ALGS,
   WebAuthnError,
@@ -200,14 +218,18 @@ export function registerWebOps(
       res.redirect(next);
       return;
     }
-    res.type('html').send(forms.loginPage(next));
+    res.type('html').send(forms.loginPage(next, undefined, githubConfigured(root)));
   });
 
   app.post('/login', form, (req, res) => {
     const next = safeNext(field(req, 'next'));
+    const github = githubConfigured(root);
     const state = loadVault(root);
     if (state.status !== 'ok') {
-      res.status(500).type('html').send(forms.loginPage(next, 'The vault is not available; try again later.'));
+      res
+        .status(500)
+        .type('html')
+        .send(forms.loginPage(next, 'The vault is not available; try again later.', github));
       return;
     }
     const username = field(req, 'username');
@@ -226,7 +248,8 @@ export function registerWebOps(
             next,
             `Too many failed sign-in attempts from this address. Try again in ${minutes} minute${
               minutes === 1 ? '' : 's'
-            }.`
+            }.`,
+            github
           )
         );
       return;
@@ -236,7 +259,7 @@ export function registerWebOps(
       authLimiter.fail(req, username);
       // One generic message: no username/token distinction. The refusal above
       // says nothing about whether the username exists either.
-      res.status(401).type('html').send(forms.loginPage(next, 'Invalid username or token.'));
+      res.status(401).type('html').send(forms.loginPage(next, 'Invalid username or token.', github));
       return;
     }
     setSessionCookie(req, res, root, auth);
@@ -298,7 +321,13 @@ export function registerWebOps(
     const viewer = requireViewerPage(root, req, res);
     if (!viewer) return;
     const msg = typeof req.query.msg === 'string' ? req.query.msg : undefined;
-    res.type('html').send(forms.accountPage(viewer, { restricted: restricted(viewer), msg }));
+    res.type('html').send(
+      forms.accountPage(viewer, {
+        restricted: restricted(viewer),
+        msg,
+        github: { enabled: githubConfigured(root), account: viewer.auth.user.github ?? null },
+      })
+    );
   });
 
   app.post('/account/passkeys/challenge', jsonForm, (req, res) => {
@@ -565,6 +594,188 @@ export function registerWebOps(
       token: { hash: passkeyBinding(found.passkey.id) },
     });
     res.json({ next: safeNext(field(req, 'next')) });
+  });
+
+  // ---- sign in with GitHub ----
+  //
+  // The OAuth code flow, ending at the same setSessionCookie as every other
+  // way in. The state parameter is a one-time id from the same kind of store
+  // the WebAuthn challenges use, so a callback that was not started here, or
+  // is replayed, redeems nothing; an entry marked with `link` was started by
+  // a signed-in user's own CSRF-checked form and attaches the GitHub account
+  // to them instead of signing anyone in. The access token GitHub hands back
+  // is used for one request -- who is this -- and dropped. The session is
+  // bound to gh:<numeric id> and resolves against live vault.json on every
+  // request (authForBinding in src/vault.ts), so unlinking the account ends
+  // its sessions the way revoking a token does.
+
+  const githubStates = createOneTimeStore<{ next: string; link?: string }>();
+  const GITHUB_STATE_TTL_MS = 10 * 60 * 1000;
+  const githubCallbackUrl = (req: Request) => `${req.protocol}://${req.get('host')}/login/github/callback`;
+
+  app.get('/login/github', (req, res) => {
+    const next = safeNext(String(req.query.next ?? '/'));
+    if (getViewer(req, root)) {
+      res.redirect(next);
+      return;
+    }
+    if (!githubConfigured(root)) {
+      fail(res, 404, 'Sign-in with GitHub is not configured on this vault.', null, '/login');
+      return;
+    }
+    const state = githubStates.put({ next }, GITHUB_STATE_TTL_MS);
+    res.redirect(githubAuthorizeUrl(loadConfig(root).auth.githubClientId, githubCallbackUrl(req), state));
+  });
+
+  // Linking starts from a POST on the account page, so the CSRF check has
+  // already vouched that the account's owner asked for it; the state entry
+  // carries their name to the callback. A restricted session may not link,
+  // for the passkey rule's reason: signing in with GitHub carries the user's
+  // full standing, so minting the way in from a session that does not have it
+  // would widen the token it came from.
+  app.post('/account/github', form, (req, res) => {
+    const viewer = requireViewerPost(root, req, res);
+    if (!viewer) return;
+    if (restricted(viewer)) {
+      fail(res, 403, 'A session from a restricted token may not link a GitHub account.', viewer, '/account');
+      return;
+    }
+    if (!githubConfigured(root)) {
+      fail(res, 404, 'Sign-in with GitHub is not configured on this vault.', viewer, '/account');
+      return;
+    }
+    const state = githubStates.put({ next: '/account', link: viewer.auth.username }, GITHUB_STATE_TTL_MS);
+    res.redirect(githubAuthorizeUrl(loadConfig(root).auth.githubClientId, githubCallbackUrl(req), state));
+  });
+
+  app.get(
+    '/login/github/callback',
+    ah(async (req, res) => {
+      // The shared sign-in limiter: a forged or replayed callback is a
+      // credential being guessed, like a mistyped token.
+      const allowed = authLimiter.allow(req, null);
+      if (!allowed.ok) {
+        res.setHeader('Retry-After', String(allowed.retryAfter));
+        fail(res, 429, 'Too many attempts from this address. Try again later.', null, '/login');
+        return;
+      }
+      const pending = githubStates.take(String(req.query.state ?? ''));
+      if (!pending) {
+        authLimiter.fail(req, null);
+        fail(
+          res,
+          400,
+          'This sign-in attempt is stale or was not started here; start again from the sign-in page.',
+          null,
+          '/login'
+        );
+        return;
+      }
+      const code = String(req.query.code ?? '');
+      if (code === '') {
+        // GitHub answers a cancelled authorization with ?error=access_denied
+        // and no code: a choice, not a failure worth a limiter charge.
+        fail(res, 400, 'GitHub did not complete the sign-in.', null, '/login');
+        return;
+      }
+      const clientId = loadConfig(root).auth.githubClientId;
+      const clientSecret = readGithubSecret(root);
+      if (clientId === '' || clientSecret === null) {
+        fail(res, 404, 'Sign-in with GitHub is not configured on this vault.', null, '/login');
+        return;
+      }
+      const accessToken = await exchangeGithubCode({
+        clientId,
+        clientSecret,
+        code,
+        redirectUri: githubCallbackUrl(req),
+      });
+      const account = accessToken === null ? null : await fetchGithubUser(accessToken);
+      // The access token's one use has been made; nothing keeps it.
+      if (!account) {
+        fail(res, 502, 'GitHub did not confirm the sign-in; try again.', null, '/login');
+        return;
+      }
+      if (pending.link !== undefined) {
+        const viewer = getViewer(req, root);
+        if (!viewer || viewer.auth.username !== pending.link || restricted(viewer)) {
+          fail(
+            res,
+            403,
+            'The session that started linking is gone; sign in and link again from your account page.',
+            null,
+            '/account'
+          );
+          return;
+        }
+        try {
+          linkGithub(root, viewer.auth.username, account);
+        } catch (e) {
+          fail(res, 409, e instanceof Error ? e.message : String(e), viewer, '/account');
+          return;
+        }
+        res.redirect(`/account?msg=${encodeURIComponent(`Linked GitHub account ${account.login}.`)}`);
+        return;
+      }
+      const outcome = resolveGithubSignIn(root, account);
+      if (outcome.kind === 'refused') {
+        authLimiter.fail(req, null);
+        fail(
+          res,
+          403,
+          `The GitHub account ${account.login} is not authorized on this vault. An administrator can approve it, ` +
+            'or you can link it from your account page if you already have an account here.',
+          null,
+          '/login'
+        );
+        return;
+      }
+      if (outcome.kind === 'error') {
+        fail(res, 409, outcome.message, null, '/login');
+        return;
+      }
+      const state = loadVault(root);
+      const auth = state.status === 'ok' ? authForBinding(state.vault, outcome.username, githubBinding(account.id)) : null;
+      if (!auth) {
+        fail(res, 500, 'The vault is not available; try again later.', null, '/login');
+        return;
+      }
+      setSessionCookie(req, res, root, auth);
+      res.redirect(safeNext(pending.next));
+    })
+  );
+
+  app.post('/account/github/unlink', form, (req, res) => {
+    const viewer = requireViewerPost(root, req, res);
+    if (!viewer) return;
+    const linked = viewer.auth.user.github;
+    if (!linked) {
+      fail(res, 404, 'No GitHub account is linked.', viewer, '/account');
+      return;
+    }
+    // An account whose GitHub link is its only credential would be stranded
+    // by unlinking -- and, if its GitHub id is still on the approved list, a
+    // later sign-in would mint a second account beside the orphan. Refused
+    // with the way out named instead.
+    if (viewer.auth.user.tokens.length === 0 && !viewer.auth.user.passkeys?.length) {
+      fail(
+        res,
+        409,
+        'This GitHub link is the only way this account can sign in. Add a passkey, or have an administrator mint a token, before unlinking it.',
+        viewer,
+        '/account'
+      );
+      return;
+    }
+    const wasThisSession = viewer.auth.token.hash === githubBinding(linked.id);
+    unlinkGithub(root, viewer.auth.username);
+    // Unlinking the credential this session signed in with ends this session;
+    // the redirect says so instead of pretending otherwise.
+    if (wasThisSession) {
+      res.redirect('/login');
+      return;
+    }
+    res.redirect(`/account?msg=${encodeURIComponent('GitHub account unlinked.')}`);
   });
 
   // ---- the signed-in user's own profile ----
@@ -1963,6 +2174,132 @@ export function registerWebOps(
     saveConfig(root, { theme: name });
     setActiveTheme(name);
     res.redirect(`/admin/appearance?msg=${encodeURIComponent(`Theme set to ${name}.`)}`);
+  });
+
+  // ---- sign-in with GitHub, administered ----
+  //
+  // One page: the OAuth App's credentials, the approved list, and what is
+  // already linked. All of it is vault-wide, so all of it takes a site admin,
+  // like the theme and the egress budget.
+
+  const githubAdminOnly = (viewer: Viewer, res: Response): boolean => {
+    if (canSetVaultWide(viewer)) return true;
+    fail(res, 403, 'Sign-in with GitHub is vault-wide, so it takes a site admin.', viewer, '/admin');
+    return false;
+  };
+
+  app.get('/admin/github', (req, res) => {
+    const viewer = requireAdminPage(req, res);
+    if (!viewer) return;
+    if (!githubAdminOnly(viewer, res)) return;
+    const state = loadVault(root);
+    if (state.status !== 'ok') {
+      fail(res, 500, 'The vault is not available.', viewer, '/admin');
+      return;
+    }
+    const approved = (state.vault.githubApproved ?? []).map((a) => ({
+      ...a,
+      account: findGithubAccount(state.vault, a.id)?.username ?? null,
+    }));
+    const linked = Object.entries(state.vault.users).flatMap(([username, u]) =>
+      u.github ? [{ username, id: u.github.id, login: u.github.login }] : []
+    );
+    const msg = typeof req.query.msg === 'string' ? req.query.msg : undefined;
+    res.type('html').send(
+      forms.adminGithubPage(viewer, {
+        clientId: loadConfig(root).auth.githubClientId,
+        secretSet: readGithubSecret(root) !== null,
+        callbackUrl: githubCallbackUrl(req),
+        approved,
+        linked,
+        msg,
+      })
+    );
+  });
+
+  // The credentials post back to the page's own two-segment URL, like the
+  // egress and appearance forms: a third segment named `settings` would be
+  // shadowed by the /:collection/:repo/settings route registered above.
+  app.post('/admin/github', form, (req, res) => {
+    const viewer = requireAdminPost(req, res);
+    if (!viewer) return;
+    if (!githubAdminOnly(viewer, res)) return;
+    const clientId = field(req, 'clientId').trim();
+    const clientSecret = field(req, 'clientSecret').trim();
+    if (clientId === '') {
+      saveConfig(root, { auth: { githubClientId: '' } });
+      clearGithubSecret(root);
+      res.redirect(`/admin/github?msg=${encodeURIComponent('Sign-in with GitHub is off; the stored secret was removed.')}`);
+      return;
+    }
+    if (!/^[\x21-\x7e]{1,100}$/.test(clientId)) {
+      fail(res, 400, 'That does not look like a client id.', viewer, '/admin/github');
+      return;
+    }
+    if (clientSecret !== '' && !/^[\x21-\x7e]{1,200}$/.test(clientSecret)) {
+      fail(res, 400, 'That does not look like a client secret.', viewer, '/admin/github');
+      return;
+    }
+    saveConfig(root, { auth: { githubClientId: clientId } });
+    if (clientSecret !== '') writeGithubSecret(root, clientSecret);
+    const ready = readGithubSecret(root) !== null;
+    res.redirect(
+      `/admin/github?msg=${encodeURIComponent(
+        ready ? 'Saved. Sign-in with GitHub is on.' : 'Client id saved. Add the client secret to turn sign-in on.'
+      )}`
+    );
+  });
+
+  app.post(
+    '/admin/github/approve',
+    form,
+    ah(async (req, res) => {
+      const viewer = requireAdminPost(req, res);
+      if (!viewer) return;
+      if (!githubAdminOnly(viewer, res)) return;
+      const login = field(req, 'login').trim().replace(/^@/, '');
+      if (!isPlausibleGithubLogin(login)) {
+        fail(res, 400, 'That does not look like a GitHub username.', viewer, '/admin/github');
+        return;
+      }
+      // Resolved to the numeric id now, over GitHub's public API, so the
+      // approval survives any later rename of the login.
+      const resolved = await lookupGithubLogin(login);
+      if (!resolved) {
+        fail(res, 404, `GitHub does not know a user ${login}, or could not be reached; try again.`, viewer, '/admin/github');
+        return;
+      }
+      approveGithub(root, resolved);
+      res.redirect(`/admin/github?msg=${encodeURIComponent(`Approved ${resolved.login} (GitHub id ${resolved.id}).`)}`);
+    })
+  );
+
+  app.post('/admin/github/approved/:id/remove', form, (req, res) => {
+    const viewer = requireAdminPost(req, res);
+    if (!viewer) return;
+    if (!githubAdminOnly(viewer, res)) return;
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || !unapproveGithub(root, id)) {
+      fail(res, 404, 'That GitHub account is not on the approved list.', viewer, '/admin/github');
+      return;
+    }
+    res.redirect(`/admin/github?msg=${encodeURIComponent('Approval removed. Accounts already linked keep signing in until unlinked.')}`);
+  });
+
+  // The admin's off switch for a GitHub link, beside the ones for tokens and
+  // passkeys: the user unlinks their own on /account, and this is for the day
+  // they cannot.
+  app.post('/admin/users/:name/github/unlink', form, (req, res) => {
+    const viewer = requireAdminPost(req, res);
+    if (!viewer) return;
+    const backUrl = `/admin/users/${encodeURIComponent(req.params.name)}`;
+    const found = loadUserForAdmin(req, res, viewer, backUrl);
+    if (!found) return;
+    if (!unlinkGithub(root, found.name)) {
+      fail(res, 404, `No GitHub account is linked to ${found.name}.`, viewer, backUrl);
+      return;
+    }
+    res.redirect(`${backUrl}?msg=${encodeURIComponent('GitHub account unlinked.')}`);
   });
 
   app.get('/admin/users', (req, res) => {

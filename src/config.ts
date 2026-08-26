@@ -56,8 +56,19 @@ export interface LimitsConfig {
   egressGbPerDay: number;
 }
 
+export interface AuthConfig {
+  /**
+   * The client id of the GitHub OAuth App behind "Sign in with GitHub"; empty
+   * means the sign-in page does not offer it. The client secret is
+   * deliberately not here: config.json is ordinary vault state, so the secret
+   * lives in `<vault>/.github-secret` beside `.secret` (see src/githubauth.ts).
+   */
+  githubClientId: string;
+}
+
 export interface VaultConfig {
   theme: string;
+  auth: AuthConfig;
   ci: CiConfig;
   sites: SitesConfig;
   network: NetworkConfig;
@@ -85,6 +96,7 @@ export function configFilePath(root: string): string {
 
 const DEFAULTS: VaultConfig = {
   theme: DEFAULT_THEME,
+  auth: { githubClientId: '' },
   ci: { runs: 100, days: 0, artifactMb: 500 },
   sites: { host: '' },
   network: { trustProxy: false },
@@ -97,6 +109,7 @@ const DEFAULTS: VaultConfig = {
 function defaults(): VaultConfig {
   return {
     ...DEFAULTS,
+    auth: { ...DEFAULTS.auth },
     ci: { ...DEFAULTS.ci },
     sites: { ...DEFAULTS.sites },
     network: { ...DEFAULTS.network },
@@ -117,6 +130,14 @@ function readConfig(file: string): VaultConfig {
     // An unknown theme name falls back to the default rather than failing the
     // request: a typo in config.json should not take the vault down.
     if (typeof parsed.theme === 'string' && findTheme(parsed.theme)) config.theme = parsed.theme;
+    // The client id is public and its exact shape is GitHub's business; the
+    // check refuses only whitespace and control characters, which could not
+    // be one and would otherwise ride into a redirect URL.
+    if (typeof parsed.auth === 'object' && parsed.auth !== null) {
+      const auth = parsed.auth as Record<string, unknown>;
+      const id = typeof auth.githubClientId === 'string' ? auth.githubClientId.trim() : '';
+      config.auth = { githubClientId: /^[\x21-\x7e]{1,100}$/.test(id) ? id : DEFAULTS.auth.githubClientId };
+    }
     // Run retention: a vault's run history is the one part of its state that
     // grows without bound, so it is bounded by default and tunable here.
     if (typeof parsed.ci === 'object' && parsed.ci !== null) {

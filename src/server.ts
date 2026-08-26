@@ -95,6 +95,14 @@ function isCompressible(req: Request, res: Response): boolean {
  * obtained from a signed-in reader who thought they were clicking something of
  * the framing page's. base-uri and form-action close the two ways injected
  * markup could redirect a relative URL or a form post without running script.
+ *
+ * form-action names github.com beside 'self' because browsers apply the
+ * directive to a redirect that follows a form submission, not only to the
+ * form's own target: the account page's "Link a GitHub account" form posts to
+ * this vault, whose answer is a redirect to GitHub's authorize page (see
+ * src/webops.ts), and without the entry the browser blocks that redirect. An
+ * injected form is not helped by it: posting to github.com carries nothing of
+ * the vault's, and the sign-in cookie in particular never leaves 'self'.
  */
 const FORGE_CSP = [
   "default-src 'self'",
@@ -105,7 +113,7 @@ const FORGE_CSP = [
   "connect-src 'self'",
   "object-src 'none'",
   "base-uri 'none'",
-  "form-action 'self'",
+  "form-action 'self' https://github.com",
   "frame-ancestors 'self'",
 ].join('; ');
 

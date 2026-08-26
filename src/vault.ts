@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { withFileLock, writeFileAtomic } from './atomic';
 import { fileCache } from './filecache';
-import { isDotName } from './scan';
+import { isDotName, isValidUserName } from './scan';
 
 export const VAULT_FILE = 'vault.json';
 
@@ -50,6 +50,35 @@ export interface PasskeyRecord {
 }
 
 /**
+ * The GitHub account a user has linked, or that provisioned them. What is
+ * stored is GitHub's stable numeric account id and, for display, the login it
+ * carried when last seen; logins can change hands on GitHub, ids cannot, so
+ * the id is what a sign-in is matched by. Like a token or a passkey, the link
+ * is a credential the vault can take away: a session signed in with GitHub
+ * resolves it against live vault.json on every request, so unlinking here
+ * ends such sessions at once.
+ */
+export interface GithubAccount {
+  /** GitHub's numeric account id, the stable half of the identity. */
+  id: number;
+  /** The login as last seen, for display; refreshed when it changes. */
+  login: string;
+  linked?: string;
+}
+
+/**
+ * One entry on the admin's list of GitHub accounts that may sign in without
+ * already having an account here: the first sign-in creates one, named after
+ * the login. Approval is recorded by numeric id, resolved from the login when
+ * the entry is added, so a later rename on GitHub transfers nothing.
+ */
+export interface GithubApproval {
+  id: number;
+  login: string;
+  added?: string;
+}
+
+/**
  * What a user chooses to say about themselves on their profile page. Every
  * field is optional and plain text; the links are the one exception, held to
  * http(s) URLs where they are written so the page never links anywhere else.
@@ -81,6 +110,8 @@ export interface UserRecord {
   emails?: string[];
   /** The profile the user wrote for themselves; absent until they write one. */
   profile?: UserProfile;
+  /** The GitHub account this user signs in with, when one is linked. */
+  github?: GithubAccount;
   /**
    * The glob scopes a pre-roles vault.json granted this user, carried only
    * from parsing such a file to the migration that rewrites it (see
@@ -93,6 +124,8 @@ export interface UserRecord {
 
 export interface Vault {
   users: Record<string, UserRecord>;
+  /** GitHub accounts approved to sign in; see GithubApproval. */
+  githubApproved?: GithubApproval[];
   /** True when the file predates roles and awaits migration. */
   legacy?: boolean;
 }
@@ -192,16 +225,62 @@ function normalizeVault(parsed: unknown): Vault {
       return out;
     });
     const profile = normalizeProfile(rec.profile, name);
+    const github = normalizeGithubAccount(rec.github, name);
     users[name] = {
       tokens,
       ...(passkeys.length ? { passkeys } : {}),
       ...(rec.siteAdmin === true ? { siteAdmin: true } : {}),
       ...(emails.length ? { emails } : {}),
       ...(profile ? { profile } : {}),
+      ...(github ? { github } : {}),
       ...(legacy ? { legacy: { scope, admin } } : {}),
     };
   }
-  return { users, ...(legacy ? { legacy: true } : {}) };
+  const githubApproved = normalizeGithubApproved((parsed as Record<string, unknown>).githubApproved);
+  return {
+    users,
+    ...(githubApproved.length ? { githubApproved } : {}),
+    ...(legacy ? { legacy: true } : {}),
+  };
+}
+
+// Both GitHub shapes are parsed explicitly for the same reason passkeys are:
+// normalizeVault builds a fresh object, so a field it did not read would be
+// dropped by the next write.
+function normalizeGithubAccount(raw: unknown, username: string): GithubAccount | null {
+  if (raw === undefined || raw === null) return null;
+  if (
+    typeof raw !== 'object' ||
+    typeof (raw as Record<string, unknown>).id !== 'number' ||
+    typeof (raw as Record<string, unknown>).login !== 'string'
+  ) {
+    throw new Error(`user ${username}: "github" must be an object with a numeric "id" and a "login"`);
+  }
+  const rec = raw as Record<string, unknown>;
+  const out: GithubAccount = { id: Math.floor(rec.id as number), login: rec.login as string };
+  if (typeof rec.linked === 'string' && rec.linked !== '') out.linked = rec.linked;
+  return out;
+}
+
+function normalizeGithubApproved(raw: unknown): GithubApproval[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    throw new Error('"githubApproved" must be a list');
+  }
+  return raw.map((a, i) => {
+    if (
+      typeof a !== 'object' ||
+      a === null ||
+      typeof (a as Record<string, unknown>).id !== 'number' ||
+      typeof (a as Record<string, unknown>).login !== 'string'
+    ) {
+      throw new Error(`githubApproved ${i} must be an object with a numeric "id" and a "login"`);
+    }
+    const rec = a as Record<string, unknown>;
+    const out: GithubApproval = { id: Math.floor(rec.id as number), login: rec.login as string };
+    if (typeof rec.added === 'string' && rec.added !== '') out.added = rec.added;
+    return out;
+  });
 }
 
 // A hand-edited vault.json should not take the vault down over a profile, so
@@ -313,7 +392,19 @@ function writeVault(file: string, vault: Vault): void {
     const { legacy: _legacy, ...rest } = u;
     users[name] = rest;
   }
-  writeFileAtomic(file, JSON.stringify({ version: VAULT_VERSION, users }, null, 2) + '\n', { mode: 0o600 });
+  writeFileAtomic(
+    file,
+    JSON.stringify(
+      {
+        version: VAULT_VERSION,
+        users,
+        ...(vault.githubApproved?.length ? { githubApproved: vault.githubApproved } : {}),
+      },
+      null,
+      2
+    ) + '\n',
+    { mode: 0o600 }
+  );
 }
 
 /**
@@ -490,14 +581,23 @@ export function passkeyBinding(credentialId: string): string {
   return PASSKEY_BINDING_PREFIX + credentialId;
 }
 
+/** How a session signed in with GitHub spells its binding: the numeric GitHub
+ * id behind a prefix, so it can collide with neither a token hash nor a
+ * passkey binding. */
+export const GITHUB_BINDING_PREFIX = 'gh:';
+
+export function githubBinding(id: number): string {
+  return GITHUB_BINDING_PREFIX + String(id);
+}
+
 /**
  * The AuthResult a session binding resolves to against a live vault: a token
- * binding finds its TokenRecord, and a passkey binding finds the passkey and
- * stands a synthetic token in for it. The synthetic record carries no scope,
- * deliberately: a passkey proves the user, not a narrowed token, so a session
- * signed in with one has the user's own rights, exactly as an unscoped token
- * would. Its hash is the binding string, which is not hex and so can never
- * name a real token anywhere else.
+ * binding finds its TokenRecord, while a passkey or GitHub binding finds the
+ * credential and stands a synthetic token in for it. The synthetic record
+ * carries no scope, deliberately: a passkey or a GitHub sign-in proves the
+ * user, not a narrowed token, so a session signed in with one has the user's
+ * own rights, exactly as an unscoped token would. Its hash is the binding
+ * string, which is not hex and so can never name a real token anywhere else.
  */
 export function authForBinding(vault: Vault, username: string, binding: string): AuthResult | null {
   const user = vault.users[username];
@@ -505,6 +605,11 @@ export function authForBinding(vault: Vault, username: string, binding: string):
   if (binding.startsWith(PASSKEY_BINDING_PREFIX)) {
     const id = binding.slice(PASSKEY_BINDING_PREFIX.length);
     if (!user.passkeys?.some((p) => p.id === id)) return null;
+    return { username, user, token: { hash: binding } };
+  }
+  if (binding.startsWith(GITHUB_BINDING_PREFIX)) {
+    const id = Number(binding.slice(GITHUB_BINDING_PREFIX.length));
+    if (!Number.isInteger(id) || user.github?.id !== id) return null;
     return { username, user, token: { hash: binding } };
   }
   const token = user.tokens.find((t) => t.hash === binding);
@@ -672,6 +777,133 @@ export function mergeContributors(
   return [...groups.values()]
     .map(({ bestCommits: _b, bestSynthetic: _s, ...c }) => c)
     .sort((a, b) => b.commits - a.commits);
+}
+
+/** The user a GitHub id is linked to, for a sign-in arriving from GitHub. */
+export function findGithubAccount(vault: Vault, id: number): { username: string; user: UserRecord } | null {
+  for (const [username, user] of Object.entries(vault.users)) {
+    if (user.github?.id === id) return { username, user };
+  }
+  return null;
+}
+
+/**
+ * Link a GitHub account to a user. One GitHub id links to at most one user,
+ * or a sign-in with it would have two answers; relinking the same id to the
+ * same user only refreshes the login.
+ */
+export function linkGithub(root: string, username: string, account: { id: number; login: string }): GithubAccount {
+  return editVault(root, (file) => {
+    const vault = readVaultForEdit(file);
+    const user = vault.users[username];
+    if (!user) throw new Error(`no user ${username}`);
+    const holder = findGithubAccount(vault, account.id);
+    if (holder && holder.username !== username) {
+      throw new Error(`The GitHub account ${account.login} is already linked to ${holder.username}.`);
+    }
+    const linked = user.github?.id === account.id ? user.github.linked : new Date().toISOString();
+    const stored: GithubAccount = { id: account.id, login: account.login, ...(linked ? { linked } : {}) };
+    user.github = stored;
+    writeVault(file, vault);
+    return stored;
+  });
+}
+
+/** Remove a user's GitHub link, ending any session signed in with it. */
+export function unlinkGithub(root: string, username: string): boolean {
+  return editVault(root, (file) => {
+    const vault = readVaultForEdit(file);
+    const user = vault.users[username];
+    if (!user) throw new Error(`no user ${username}`);
+    if (!user.github) return false;
+    delete user.github;
+    writeVault(file, vault);
+    return true;
+  });
+}
+
+/** Add a GitHub account to the approved list, or refresh its login there. */
+export function approveGithub(root: string, account: { id: number; login: string }): GithubApproval {
+  return editVault(root, (file) => {
+    const vault = readVaultForEdit(file);
+    const list = vault.githubApproved ?? [];
+    const existing = list.find((a) => a.id === account.id);
+    if (existing) {
+      existing.login = account.login;
+      vault.githubApproved = list;
+      writeVault(file, vault);
+      return existing;
+    }
+    const added: GithubApproval = { id: account.id, login: account.login, added: new Date().toISOString() };
+    vault.githubApproved = [...list, added];
+    writeVault(file, vault);
+    return added;
+  });
+}
+
+/** Remove one approval by GitHub id. A user already linked is not touched:
+ * approval gates only the first sign-in, which creates an account. */
+export function unapproveGithub(root: string, id: number): boolean {
+  return editVault(root, (file) => {
+    const vault = readVaultForEdit(file);
+    const before = vault.githubApproved?.length ?? 0;
+    const after = (vault.githubApproved ?? []).filter((a) => a.id !== id);
+    if (after.length === before) return false;
+    if (after.length) vault.githubApproved = after;
+    else delete vault.githubApproved;
+    writeVault(file, vault);
+    return true;
+  });
+}
+
+export type GithubSignIn =
+  | { kind: 'ok'; username: string; created: boolean }
+  | { kind: 'refused' }
+  | { kind: 'error'; message: string };
+
+/**
+ * What a completed GitHub sign-in means to this vault. A linked account wins
+ * outright; failing that, an approved id has an account created for it, named
+ * after the GitHub login (with a numeric suffix when that name is taken or
+ * reserved); anything else is refused. One vault edit end to end, so the
+ * check and the provisioning cannot race a second sign-in into two accounts.
+ * The new account holds no tokens: it can use the web signed in with GitHub,
+ * and pushing over git waits until an administrator mints it a token.
+ */
+export function resolveGithubSignIn(root: string, account: { id: number; login: string }): GithubSignIn {
+  return editVault(root, (file) => {
+    if (!fs.existsSync(file)) return { kind: 'refused' } as const;
+    const vault = readVaultForEdit(file);
+    const linked = findGithubAccount(vault, account.id);
+    if (linked) {
+      // A rename on GitHub's side refreshes the stored login, which is
+      // display only; the id did the matching.
+      if (linked.user.github && linked.user.github.login !== account.login) {
+        linked.user.github.login = account.login;
+        writeVault(file, vault);
+      }
+      return { kind: 'ok', username: linked.username, created: false } as const;
+    }
+    const approval = (vault.githubApproved ?? []).find((a) => a.id === account.id);
+    if (!approval) return { kind: 'refused' } as const;
+    let username: string | null = null;
+    for (const candidate of [account.login, ...[2, 3, 4, 5, 6, 7, 8, 9].map((n) => `${account.login}-${n}`)]) {
+      if (isValidUserName(candidate) && !vault.users[candidate]) {
+        username = candidate;
+        break;
+      }
+    }
+    if (!username) {
+      return { kind: 'error', message: `No free username could be derived from ${account.login}.` } as const;
+    }
+    vault.users[username] = {
+      tokens: [],
+      github: { id: account.id, login: account.login, linked: new Date().toISOString() },
+    };
+    if (approval.login !== account.login) approval.login = account.login;
+    writeVault(file, vault);
+    return { kind: 'ok', username, created: true } as const;
+  });
 }
 
 /** Remove a user, and with them every token they hold. */

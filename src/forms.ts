@@ -9,7 +9,7 @@ import { formatSize, timeTag } from './render';
 import { Viewer } from './session';
 import { Theme } from './themes';
 import { isSiteAdmin } from './perms';
-import { UserProfile, UserRecord, passkeyBinding, tokenId } from './vault';
+import { GithubAccount, UserProfile, UserRecord, passkeyBinding, tokenId } from './vault';
 import {
   PageOpts,
   RepoCtx,
@@ -37,11 +37,12 @@ export function flashBanner(msg?: string): Html | '' {
   return msg ? html`<div class="flash">${msg}</div>` : '';
 }
 
-export function loginPage(next: string, error?: string): string {
+export function loginPage(next: string, error?: string, github = false): string {
   // A narrow card under the mark, centred on the page: signing in is the one
   // thing this page is for, so nothing else is on it. The passkey button is
   // hidden until the page script finds WebAuthn support, so a browser without
-  // it sees the form it can use and nothing it cannot.
+  // it sees the form it can use and nothing it cannot; the GitHub button is
+  // decided by the server, since whether it can work is the vault's own state.
   const content = html`<div class="signin">
 <div class="signin-mark">${raw(MARK)}</div>
 <h1>Sign in to Mochi Forge</h1>
@@ -57,6 +58,13 @@ ${errorBanner(error)}
 <button type="button" class="btn" data-passkey-login-btn data-next="${next}">${icon('lock')}<span>Sign in with a passkey</span></button>
 <div class="form-error" data-passkey-error hidden></div>
 </div>
+${
+    github
+      ? html`<div class="signin-alt"><a class="btn" href="/login/github?next=${encodeURIComponent(
+          next
+        )}">${icon('person')}<span>Sign in with GitHub</span></a></div>`
+      : ''
+  }
 </div>
 <p class="muted small signin-note">A token is what git uses for pushing. Tokens are minted by an administrator; there are no passwords.
 Passkeys are added from your account page, once you are signed in.</p>
@@ -117,7 +125,12 @@ export function loginLinkConfirmPage(username: string, code: string, next: strin
  */
 export function accountPage(
   viewer: Viewer,
-  opts: { restricted: boolean; msg?: string; error?: string } = { restricted: false }
+  opts: {
+    restricted: boolean;
+    msg?: string;
+    error?: string;
+    github?: { enabled: boolean; account: GithubAccount | null };
+  } = { restricted: false }
 ): string {
   const name = viewer.auth.username;
   const user = viewer.auth.user;
@@ -156,6 +169,38 @@ the token. It is kept by your browser or device; the vault stores only its publi
 ${list}
 ${add}
 </div>`;
+  const gh = opts.github;
+  // Shown when the vault offers GitHub sign-in, and also when it no longer
+  // does but a link remains: a stored credential should never be invisible to
+  // the person it belongs to.
+  const githubBox =
+    !gh || (!gh.enabled && !gh.account)
+      ? ''
+      : html`<div class="form-box">
+<h2>GitHub</h2>
+${
+          gh.account
+            ? html`<p>Linked to <a href="https://github.com/${gh.account.login}"><b>${gh.account.login}</b></a> <span class="mono small muted">id ${String(
+                gh.account.id
+              )}</span>${gh.account.linked ? html`, since ${timeTag(gh.account.linked, '')}` : ''}.</p>
+<p class="muted small">&ldquo;Sign in with GitHub&rdquo; on the sign-in page signs in as <b>${name}</b>. Unlinking is
+immediate: a session signed in with GitHub is signed out on its next page load. git keeps using tokens either way.</p>
+<form method="post" action="/account/github/unlink" class="inline-form">
+${csrfField(viewer)}
+<button type="submit" class="btn btn-danger-outline">Unlink</button>
+</form>`
+            : opts.restricted
+              ? html`<p class="muted small">This session was signed in with a restricted token, which may not link a GitHub
+account: signing in with GitHub carries your full standing, so linking takes a session that already has it.</p>`
+              : html`<form method="post" action="/account/github" class="inline-form">
+${csrfField(viewer)}
+<button type="submit" class="btn">${icon('link')}<span>Link a GitHub account</span></button>
+</form>
+<p class="muted small">Linking sends you to GitHub to authorize once; nothing of GitHub's is stored here beyond the
+account's id and name. Afterwards &ldquo;Sign in with GitHub&rdquo; on the sign-in page signs you in as <b>${name}</b>.
+git keeps using tokens.</p>`
+        }
+</div>`;
   const handoff = html`<div class="form-box">
 <h2>Sign in on another device</h2>
 <form method="post" action="/account/link">
@@ -170,6 +215,7 @@ ${flashBanner(opts.msg)}
 ${errorBanner(opts.error)}
 <p class="muted">${user.siteAdmin ? 'Site admin' : html`Owns the collection <span class="mono">${name}</span> by name`}</p>
 ${passkeyBox}
+${githubBox}
 ${handoff}`;
   return layout('Your account', content, { viewer, path: '/account' });
 }
@@ -947,6 +993,25 @@ ${csrfField(viewer)}
 <p class="muted small">Passkeys sign in to the web interface only, with the user's full standing. ${name} adds them from
 their own account page; removal is immediate, like revoking a token.</p>`
     : '';
+  // The GitHub link sits with the other credentials for the same reason
+  // passkeys do: it is a way this user signs in, and unlinking is the same
+  // emergency off switch. Linking is not here; it takes the GitHub side, so
+  // it lives on the user's own account page.
+  const github = user.github
+    ? html`<div class="form-box">
+<h2>GitHub</h2>
+<form method="post" action="${base}/github/unlink">
+${csrfField(viewer)}
+<p>Linked to GitHub account <a href="https://github.com/${user.github.login}"><b>${user.github.login}</b></a>
+<span class="mono small muted">id ${String(user.github.id)}</span>. &ldquo;Sign in with GitHub&rdquo; signs in as ${name},
+with their full standing.</p>
+<button type="submit" class="btn btn-danger-outline">Unlink</button>
+</form>
+<p class="muted small">Unlinking ends sessions signed in with GitHub on their next request. To bar this person from
+GitHub sign-in entirely, also remove them from the approved list under <a href="/admin/github">GitHub sign-in</a>, or a
+fresh account would be created for them on their next sign-in.</p>
+</div>`
+    : '';
   const identity = html`<div class="form-box">
 <h2>Identity</h2>
 <form method="post" action="${base}/emails">
@@ -981,6 +1046,7 @@ ${errorBanner(error)}
 ${tokens}
 ${mint}
 ${passkeys}
+${github}
 ${grant}
 ${identity}
 ${danger}
@@ -995,7 +1061,7 @@ ${danger}
  */
 export function adminShell(
   viewer: Viewer,
-  active: 'index' | 'users' | 'runners' | 'appearance' | 'egress',
+  active: 'index' | 'users' | 'runners' | 'appearance' | 'egress' | 'github',
   title: string,
   path: string,
   body: Html
@@ -1010,6 +1076,7 @@ export function adminShell(
   )}Administration</h3><div class="side-links">
 ${item('users', '/admin/users', 'Users', 'people')}
 ${item('runners', '/admin/runners', 'Runners', 'server')}
+${canVault ? item('github', '/admin/github', 'GitHub sign-in', 'person') : ''}
 ${canVault ? item('egress', '/admin/egress', 'Egress', 'upload') : ''}
 ${canVault ? item('appearance', '/admin/appearance', 'Appearance', 'appearance') : ''}
 </div></div></aside>`;
@@ -1019,6 +1086,7 @@ ${canVault ? item('appearance', '/admin/appearance', 'Appearance', 'appearance')
     index: null,
     users: { href: '/admin/users', label: 'Users' },
     runners: { href: '/admin/runners', label: 'Runners' },
+    github: { href: '/admin/github', label: 'GitHub sign-in' },
     egress: { href: '/admin/egress', label: 'Egress' },
     appearance: { href: '/admin/appearance', label: 'Appearance' },
   };
@@ -1040,6 +1108,11 @@ export function adminIndexPage(viewer: Viewer, canVault: boolean): string {
 <div class="card-list">
 ${card('/admin/users', 'Users', 'Create users, grant site admin, mint tokens.')}
 ${card('/admin/runners', 'Runners', 'Register the machines that execute workflow jobs.')}
+${
+  canVault
+    ? card('/admin/github', 'GitHub sign-in', 'Let approved GitHub accounts sign in to this vault.')
+    : ''
+}
 ${
   canVault
     ? card('/admin/egress', 'Egress', 'See what has been sent out today, per repository, and cap what a day may send.')
@@ -1205,6 +1278,101 @@ ${csrfField(viewer)}
 <button type="submit" class="btn btn-primary">${icon('check')}<span>Save theme</span></button>
 </form>`;
   return adminShell(viewer, 'appearance', 'Appearance', '/admin/appearance', content);
+}
+
+/**
+ * Sign-in with GitHub, administered: the OAuth App's credentials, the list of
+ * GitHub accounts approved to sign in, and what is already linked. The
+ * callback URL is on the page because it is the one value GitHub's form asks
+ * for that the administrator would otherwise have to derive by hand.
+ */
+export function adminGithubPage(
+  viewer: Viewer,
+  opts: {
+    clientId: string;
+    secretSet: boolean;
+    callbackUrl: string;
+    approved: { id: number; login: string; added?: string; account: string | null }[];
+    linked: { username: string; id: number; login: string }[];
+    msg?: string;
+    error?: string;
+  }
+): string {
+  const on = opts.clientId !== '' && opts.secretSet;
+  const status = on
+    ? html`<p>Sign-in with GitHub is <b>on</b>: the sign-in page offers it, approved GitHub accounts get an account here
+on their first sign-in, and users may link their GitHub account from their account page.</p>`
+    : html`<p>Sign-in with GitHub is <b>off</b>${
+        opts.clientId !== '' ? ' until the client secret is added below' : ''
+      }.</p>`;
+  const setup = html`<div class="form-box">
+<h2>OAuth App</h2>
+${status}
+<p class="muted small">Create a GitHub OAuth App (on GitHub: Settings &rarr; Developer settings &rarr; OAuth Apps) with
+this authorization callback URL, and put its credentials here:</p>
+${copyRow(opts.callbackUrl)}
+<form method="post" action="/admin/github">
+${csrfField(viewer)}
+<div class="field"><label for="ghClientId">Client id</label><input type="text" id="ghClientId" name="clientId" value="${
+    opts.clientId
+  }" autocomplete="off"></div>
+<div class="field"><label for="ghClientSecret">Client secret</label><input type="password" id="ghClientSecret" name="clientSecret" autocomplete="off" placeholder="${
+    opts.secretSet ? 'stored; leave empty to keep it' : ''
+  }">
+<p class="muted small">The client id is public and kept in <span class="mono">config.json</span>; the secret is written
+to <span class="mono">.github-secret</span> beside <span class="mono">.secret</span>, mode 600, and never shown again.
+Saving with an empty client id turns sign-in with GitHub off and removes the stored secret.</p></div>
+<button type="submit" class="btn btn-primary">${icon('check')}<span>Save</span></button>
+</form>
+</div>`;
+  const approvedRows = opts.approved.map(
+    (a) => html`<tr><td><a href="https://github.com/${a.login}">${a.login}</a></td><td class="mono small muted">${String(
+      a.id
+    )}</td><td class="muted small">${a.added ? timeTag(a.added, '') : ''}</td><td>${
+      a.account
+        ? userLink(a.account, { face: 20, bold: true })
+        : raw('<span class="muted small">first sign-in creates one</span>')
+    }</td><td class="right">
+<form method="post" action="/admin/github/approved/${String(a.id)}/remove" class="inline-form">
+${csrfField(viewer)}
+<button type="submit" class="btn btn-danger-outline">Remove</button>
+</form></td></tr>`
+  );
+  const approvedTable = approvedRows.length
+    ? html`<table class="listing"><tbody><tr><th>GitHub user</th><th>Id</th><th>Approved</th><th>Account here</th><th class="right"></th></tr>${approvedRows}</tbody></table>`
+    : html`<p class="muted">Nobody is approved yet.</p>`;
+  const approve = html`<div class="form-box">
+<h2>Approved GitHub accounts</h2>
+<p class="muted small">An approved GitHub account may sign in here; its first sign-in creates a vault account named
+after the GitHub login, holding no tokens until one is minted for it. Approval is recorded by GitHub's stable numeric
+id, resolved from the username as it is added, so a later rename on GitHub transfers nothing. Removing an approval
+stops new accounts being created; a GitHub account already linked to a user keeps signing in until it is unlinked on
+that user's page.</p>
+${approvedTable}
+<form method="post" action="/admin/github/approve" class="inline-form">
+${csrfField(viewer)}
+<label for="ghLogin">GitHub username</label><input type="text" id="ghLogin" name="login" autocomplete="off" spellcheck="false" required>
+<button type="submit" class="btn">${icon('plus')}<span>Approve</span></button>
+</form>
+</div>`;
+  const linkedRows = opts.linked.map(
+    (l) => html`<tr><td class="with-avatar">${userLink(l.username, { face: 20, bold: true })}</td><td><a href="https://github.com/${
+      l.login
+    }">${l.login}</a></td><td class="mono small muted">${String(l.id)}</td></tr>`
+  );
+  const linked = linkedRows.length
+    ? html`<h2>Linked accounts</h2>
+<table class="listing"><tbody><tr><th>User</th><th>GitHub account</th><th>Id</th></tr>${linkedRows}</tbody></table>
+<p class="muted small">Each is unlinked from its user's page under <a href="/admin/users">Users</a>, or by the user on
+their own account page.</p>`
+    : '';
+  const content = html`<div class="page-head"><h1>GitHub sign-in</h1></div>
+${flashBanner(opts.msg)}
+${errorBanner(opts.error)}
+${setup}
+${approve}
+${linked}`;
+  return adminShell(viewer, 'github', 'GitHub sign-in', '/admin/github', content);
 }
 
 export function tokenPage(viewer: Viewer, username: string, token: string, created: boolean): string {
