@@ -2023,6 +2023,32 @@ export function registerWebOps(
     })
   );
 
+  // Syncing a fork from its upstream, like importing, runs on the operator's
+  // machine: the server never fetches from another host. So the Sync link in
+  // the repository header leads here, and this page only hands them the
+  // command, the way the import page does.
+  app.get(
+    '/:collection/:repo/sync',
+    ah(async (req, res) => {
+      const viewer = requireViewerPage(root, req, res);
+      if (!viewer) return;
+      const loaded = await loadRepo(root, req, res, viewer);
+      if (!loaded) return;
+      const ctx = await makeCtx(root, req, loaded, loaded.defaultBranch ?? '', viewer);
+      if (!ctx.upstream) {
+        fail(
+          res,
+          404,
+          'This repository has no upstream recorded, so there is nothing to sync from. Record one in its settings to make it a fork.',
+          viewer,
+          `${urlOf(loaded.repo)}/settings`
+        );
+        return;
+      }
+      res.type('html').send(forms.syncPage(ctx, `${req.protocol}://${req.get('host') ?? ''}`));
+    })
+  );
+
   app.post(
     '/:collection/:repo/settings/rename',
     form,

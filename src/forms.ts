@@ -358,6 +358,37 @@ ${back}
 }
 
 /**
+ * The sync page, reached from the "forked from" line in the repository
+ * header. Like importing, syncing runs on the reader's machine rather than on
+ * the server, which holds no credential for the upstream and never fetches
+ * from another host; so, like the import page, this one hands them the
+ * command that does it, filled in with this repository's address.
+ */
+export function syncPage(ctx: RepoCtx, vaultUrl: string): string {
+  const base = repoUrl(ctx);
+  const up = ctx.upstream!;
+  const branch = ctx.defaultBranch
+    ? html`That fast-forwards <span class="mono">${ctx.defaultBranch}</span>; <span class="mono">--branch</span> names another.`
+    : html`This repository is empty, so name the branch to sync with <span class="mono">--branch</span>.`;
+  const content = html`${repoHeader(ctx, 'code')}
+<div class="form-box wide">
+<h1>Sync from the upstream</h1>
+<p class="muted">This repository was forked from ${
+    up.web ? html`<a href="${up.web}" rel="noopener">${up.label}</a>` : html`<span class="mono">${up.label}</span>`
+  }. Syncing runs on your machine, not on this server: git fetches the upstream with the credentials you already have there and pushes the result here, so the vault never needs a credential for the upstream. The <span class="mono">mochi</span> command does both.</p>
+<hr class="rule">
+<h2>Once per machine</h2>
+${copyRow('npm install -g @magland/mochi')}
+${copyRow(`mochi login ${vaultUrl}`)}
+<h2>Then, whenever the upstream has moved</h2>
+${copyRow(`mochi sync ${ctx.collection}/${ctx.repo}`)}
+<p class="muted small">${branch} Only a fast-forward is ever pushed: a branch that has grown commits of its own is reported as diverged and left alone, since reconciling it is a merge or a rebase in a clone of your own. The upstream URL is the one recorded in <a href="${base}/settings">settings</a>.</p>
+<p><a class="btn" href="${base}">Back to ${ctx.repo}</a></p>
+</div>`;
+  return layout(`Sync ${ctx.collection}/${ctx.repo}`, content, repoOpts(ctx, `${base}/sync`));
+}
+
+/**
  * Creating a collection on its own. A push creates the collection it lands in,
  * so this is for the order where the collection comes first: an empty one to
  * import into, or to hand someone push access over before anything is in it.

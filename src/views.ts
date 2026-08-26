@@ -455,7 +455,7 @@ export function repoHeader(
           ctx.upstream.web
             ? html`<a href="${ctx.upstream.web}" rel="noopener">${ctx.upstream.label}</a>`
             : ctx.upstream.label
-        }</span></div>`
+        }${ctx.canPush ? html` &middot; <a href="${base}/sync">Sync</a>` : ''}</span></div>`
       : '';
   const badge = ctx.isPrivate ? html` <span class="counter" title="Only collaborators, owners, and site admins can see this repository">Private</span>` : '';
   return html`<div class="repo-title">${REPO_ICON}<a href="/${encodeURIComponent(ctx.collection)}">${ctx.collection}</a> <span class="muted">/</span> <a href="${base}"><b>${ctx.repo}</b></a>${badge}${search}</div>

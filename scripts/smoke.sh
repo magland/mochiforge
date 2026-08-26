@@ -1069,6 +1069,39 @@ grep -q 'forkedFrom = demo/proj' "$VAULT/collections/forks/repos/proj.git/config
 grep -q 'url = ' "$VAULT/collections/forks/repos/proj.git/config" && { echo "FAIL: the fork kept an origin remote pointing at a path"; exit 1; }
 PASS=$((PASS+2)); echo "ok: the fork records its parent and keeps no origin"
 
+# ---- syncing a fork from its upstream ----
+#
+# Syncing runs on the operator's machine, like importing, so the Sync link in
+# the repository header leads to a page that hands them the command. The link
+# and the page exist only while an upstream URL is recorded; the in-vault fork
+# above has a parent, not an upstream, so it gets neither.
+check "the in-vault fork carries no sync link" 200 -b "$JAR" "$BASE/forks/proj"
+body_lacks "no upstream, no link" 'href="/forks/proj/sync"'
+check "sync page needs a session" 302 "$BASE/demo/proj/sync"
+check "no upstream means no sync page" 404 -b "$JAR" "$BASE/demo/proj/sync"
+check "settings page carries the upstream field" 200 -b "$JAR" "$BASE/demo/proj/settings"
+body_has "an input for the upstream" 'name="upstream"'
+CSRF="$(csrf_of)"
+check "a value that is not a git URL is refused" 400 -b "$JAR" "$BASE/demo/proj/settings" \
+  --data-urlencode "csrf=$CSRF" --data-urlencode "description=A refreshed description" \
+  --data-urlencode upstream=not-a-url
+check "record an upstream in settings" 302 -b "$JAR" "$BASE/demo/proj/settings" \
+  --data-urlencode "csrf=$CSRF" --data-urlencode "description=A refreshed description" \
+  --data-urlencode upstream=https://github.com/octocat/Hello-World
+check "the header says where the fork came from" 200 -b "$JAR" "$BASE/demo/proj"
+body_has "linking the upstream" 'href="https://github.com/octocat/Hello-World"'
+body_has "and offering the sync page" 'href="/demo/proj/sync">Sync'
+check "the sync page writes the command out" 200 -b "$JAR" "$BASE/demo/proj/sync"
+body_has "filled in with this repository" 'mochi sync demo/proj'
+body_has "after the login that precedes it" "mochi login $BASE"
+check "a reader without push still sees the provenance" 200 "$BASE/demo/proj"
+body_has "forked from stays" 'forked from'
+body_lacks "but the sync link is for someone who can push" 'href="/demo/proj/sync">Sync'
+check "clear the upstream again" 302 -b "$JAR" "$BASE/demo/proj/settings" \
+  --data-urlencode "csrf=$CSRF" --data-urlencode "description=A refreshed description" \
+  --data-urlencode upstream=
+check "and the sync page is gone with it" 404 -b "$JAR" "$BASE/demo/proj/sync"
+
 # ---- empty repository README flow ----
 
 check "new repo form again" 200 -b "$JAR" "$BASE/new"
