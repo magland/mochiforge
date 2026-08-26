@@ -134,13 +134,17 @@ RUNNER_PID=""
 PRESET_PID=""
 LIMIT_PID=""
 BACKUP_PID=""
+# Killing a server is asynchronous: it can still be writing into the vault when
+# the signal lands, and an rm -rf racing those writes loses ("Directory not
+# empty") and fails the suite after every check passed. Wait for each process to
+# actually exit before deleting the tree out from under it.
 cleanup() {
-  [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
-  [ -n "$FORGE_PID" ] && kill "$FORGE_PID" 2>/dev/null || true
-  [ -n "$PRESET_PID" ] && kill "$PRESET_PID" 2>/dev/null || true
-  [ -n "${LIMIT_PID:-}" ] && kill "$LIMIT_PID" 2>/dev/null || true
-  [ -n "${BACKUP_PID:-}" ] && kill "$BACKUP_PID" 2>/dev/null || true
-  [ -n "${RUNNER_PID:-}" ] && kill "$RUNNER_PID" 2>/dev/null || true
+  local pid
+  for pid in "$SERVER_PID" "$FORGE_PID" "$PRESET_PID" "${LIMIT_PID:-}" "${BACKUP_PID:-}" "${RUNNER_PID:-}"; do
+    [ -n "$pid" ] || continue
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -2714,7 +2718,7 @@ header_has "and take no injected base URL" "base-uri 'none'"
 for page in "" /pushed /pushed/created /pushed/created/tree/main /pushed/created/branches \
   /pushed/created/settings /pushed/created/issues /pushed/created/pulls /admin/users /admin/runners; do
   check "no inline script on ${page:-/}" 200 -b "$JAR" "$BASE$page"
-  if grep -qE '<script(?![^>]*(src=|type="application/json"))' -P "$BODY"; then
+  if grep -qP '<script(?![^>]*(src=|type="application/json"))' "$BODY"; then
     echo "FAIL: ${page:-/} carries an inline script"; exit 1
   fi
   if grep -qiE ' on(click|input|change|submit|keydown|mouseenter|error|load)=' "$BODY"; then
@@ -4660,6 +4664,23 @@ grep -q "Neither fly nor flyctl is on PATH" "$TMP/fly-missing.log" || {
   echo "FAIL: no useful message when flyctl is absent"; cat "$TMP/fly-missing.log"; exit 1; }
 PASS=$((PASS+1)); echo "ok: a deploy with no flyctl says which names it looked for"
 
+# ---- sign out ----
+
+check "sign out" 302 -b "$JAR" -c "$JAR" "$BASE/logout" --data-urlencode "csrf=$CSRF"
+check "signed out home" 200 -b "$JAR" "$BASE/"
+body_has "sign-in link back" 'Sign in'
+
+# That was the last thing the first server was needed for, and it must be gone
+# before the egress checks below run: every server flushes its egress counts to
+# egress.json on a half-minute timer, and a flush from this one landing between
+# that test's rm -f and the capped server's startup read would start the capped
+# server with the whole run's traffic already on the books, refusing the first
+# request the test expects answered. Stopping a server is asynchronous, so wait
+# for it to actually be gone.
+kill "$SERVER_PID" 2>/dev/null || true
+wait "$SERVER_PID" 2>/dev/null || true
+SERVER_PID=""
+
 # ---- rate limits and abuse controls ----
 
 # A test that trips a limit leaves the limiter tripped for everything after it,
@@ -4859,16 +4880,6 @@ stop_limited
 grep -q '"days"' "$VAULT/egress.json" || { echo "FAIL: no egress counts were written"; exit 1; }
 grep -q '"pushed/created"' "$VAULT/egress.json" || { echo "FAIL: the counts name no repository"; exit 1; }
 PASS=$((PASS+2)); echo "ok: the counts were written out, per repository"
-rm -f "$VAULT/egress.json"
-
-# Leave the vault as the still-running first server expects to find it.
-printf '{\n  "theme": "paper"\n}\n' > "$VAULT/config.json"
-
-# ---- sign out ----
-
-check "sign out" 302 -b "$JAR" -c "$JAR" "$BASE/logout" --data-urlencode "csrf=$CSRF"
-check "signed out home" 200 -b "$JAR" "$BASE/"
-body_has "sign-in link back" 'Sign in'
 
 echo ""
 echo "All $PASS smoke checks passed."
