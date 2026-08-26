@@ -722,6 +722,7 @@ See also: mochi deploy fly show <app>, mochi deploy fly destroy <app>.
                                    [--idle <5m>] [--region <r>] [--volume <gb>]
                                    [--vm-size <s>] [--vm-memory <m>] [--org <o>]
                                    [--image <ref> | --from-source [--local-build]]
+                                   [--image-only]
 
 Needs flyctl, and a login to the vault this runner will serve. Registers the
 runner (named after the app unless --name says otherwise), creates the app and a
@@ -736,6 +737,12 @@ it costs while stopped is the volume alone.
 --allow is required the first time and says which repositories this runner may
 take jobs for; it executes whatever their workflows contain, on this machine.
 Run the same command again to deploy a new version.
+
+--image-only moves an already-deployed runner to a new image and touches
+nothing else: no registration, no token, no wake rewrite, so it needs flyctl
+and no vault login. A runner and the vault it serves speak one protocol, so
+the pipeline that redeploys the vault should redeploy the runner beside it,
+and this flag is what lets a job holding only a Fly credential do that.
 
 See also: mochi deploy fly runner show <app>, destroy <app>, mochi runner list.
 `,

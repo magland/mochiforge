@@ -77,6 +77,7 @@ interface RunnerDeployArgs {
   memory: string | null;
   idle: string | null;
   image: string | null;
+  imageOnly: boolean;
   fromSource: boolean;
   localBuild: boolean;
   org: string | null;
@@ -97,6 +98,7 @@ function parseArgs(args: string[], usage: () => never): RunnerDeployArgs {
     memory: null,
     idle: null,
     image: null,
+    imageOnly: false,
     fromSource: false,
     localBuild: false,
     org: null,
@@ -120,6 +122,7 @@ function parseArgs(args: string[], usage: () => never): RunnerDeployArgs {
     else if (a === '--vm-memory') out.memory = args[++i];
     else if (a === '--idle') out.idle = args[++i];
     else if (a === '--image') out.image = args[++i];
+    else if (a === '--image-only') out.imageOnly = true;
     else if (a === '--from-source') out.fromSource = true;
     else if (a === '--local-build') out.localBuild = true;
     else if (a === '--org') out.org = args[++i];
@@ -152,6 +155,7 @@ function rejectShapingFlags(a: RunnerDeployArgs, usage: string, allowYes: boolea
     ['--vm-memory', a.memory !== null],
     ['--idle', a.idle !== null],
     ['--image', a.image !== null],
+    ['--image-only', a.imageOnly],
     ['--from-source', a.fromSource],
     ['--local-build', a.localBuild],
     ['--org', a.org !== null],
@@ -185,12 +189,17 @@ async function liveSettings(app: string): Promise<Partial<Settings>> {
     out.region = vol.region;
     out.volumeGb = vol.size_gb;
   }
-  const guest = (await machines(app)).find((m) => m.config?.guest)?.config?.guest as MachineGuest | undefined;
+  const config = (await machines(app)).find((m) => m.config)?.config;
+  const guest = config?.guest as MachineGuest | undefined;
   if (guest) {
     if (guest.cpu_kind) out.cpuKind = guest.cpu_kind;
     if (guest.cpus) out.cpus = guest.cpus;
     if (guest.memory_mb) out.memory = `${guest.memory_mb}mb`;
   }
+  // The machine's own idle timeout, so a redeploy keeps a tuned --idle rather
+  // than quietly resetting it to the default.
+  const idle = config?.env?.MOCHI_IDLE;
+  if (idle) out.idle = idle;
   return out;
 }
 
@@ -276,6 +285,69 @@ async function registeredRunners(target: RemoteTarget): Promise<RegisteredRunner
   return ((data.runners ?? []) as RegisteredRunner[]) ?? [];
 }
 
+/**
+ * The fly deploy itself, shared by the full deploy and --image-only. Exits
+ * the process on failure, after saying what to try.
+ */
+async function flyDeploy(
+  app: string,
+  a: RunnerDeployArgs,
+  settings: Settings,
+  buildRoot: string | null,
+  image: string | null
+): Promise<void> {
+  const config = writeTempConfig(app, settings);
+  if (buildRoot !== null) {
+    console.log(`==> Building ${buildRoot} ${a.localBuild ? 'with the local Docker' : "on Fly's builder"}`);
+  } else {
+    console.log(`==> Deploying ${image}`);
+  }
+  const code = await flyStream(
+    [
+      'deploy',
+      '--app',
+      app,
+      '--config',
+      config,
+      ...(buildRoot !== null
+        ? ['--dockerfile', path.join(buildRoot, 'Dockerfile.runner'), ...(a.localBuild ? ['--local-only'] : [])]
+        : ['--image', image as string]),
+      '--ha=false',
+      '--yes',
+    ],
+    buildRoot ?? undefined
+  );
+  fs.rmSync(path.dirname(config), { recursive: true, force: true });
+  if (code !== 0) {
+    console.error('');
+    console.error('The deploy failed. The app, the volume, and the registration survive, so fix the');
+    console.error('cause and run the same command again.');
+    if (buildRoot === null && a.image === null) {
+      // Named as the likely cause rather than as one possibility among many,
+      // because it is the one every early deploy hits: the runner image is
+      // published per release like the vault's, so a version of the CLI newer
+      // than the newest release has no image to pull. Fly reports a package
+      // that is absent, and one that is private, with the same message about
+      // authentication, and a package newly published to GHCR is private
+      // until someone says otherwise.
+      console.error('');
+      console.error(`If Fly could not fetch ${image}:`);
+      console.error('');
+      console.error('  - It may not be published. The runner image is built per release, so a CLI');
+      console.error('    newer than the newest release asks for a tag that does not exist yet.');
+      console.error('  - It may be private. A package newly published to GHCR is private until it');
+      console.error('    is made public, and Fly reports that as an authentication error too.');
+      console.error('');
+      console.error('Either way, this deploys the checkout you are running instead:');
+      console.error('');
+      console.error(`  mochi deploy fly runner ${app} --from-source`);
+      console.error('');
+      console.error('or --image <ref> deploys some other tag.');
+    }
+    process.exit(1);
+  }
+}
+
 export async function deployFlyRunnerCmd(args: string[], usage: () => never): Promise<void> {
   const a = parseArgs(args, usage);
   if (!a.app) {
@@ -301,6 +373,51 @@ export async function deployFlyRunnerCmd(args: string[], usage: () => never): Pr
   }
   const buildRoot = a.fromSource ? sourceRoot() : null;
   const image = buildRoot === null ? a.image ?? `${RUNNER_IMAGE_REPO}:${ownVersion()}` : null;
+
+  // --image-only: move the machine to a new image and touch nothing else (no
+  // registration, no token, no wake rewrite, no secret staging), so it needs
+  // flyctl and no vault login. That is the shape a pipeline wants: the runner
+  // image is built beside the vault's, a runner and the vault it serves speak
+  // one protocol, and a job holding only a Fly credential can do exactly this
+  // much and no more.
+  if (a.imageOnly) {
+    if (a.allow.length > 0 || a.labels.length > 0) {
+      die(
+        `${a.allow.length > 0 ? '--allow' : '--labels'} changes the registration, which lives in the vault, and --image-only\n` +
+          'deploys without touching the vault. Drop one or the other.'
+      );
+    }
+    await requireFly();
+    if (!(await appExists(app))) {
+      die(
+        `No Fly app named '${app}' that you can see, and --image-only updates one that\n` +
+          'already exists. The full deploy creates it:\n\n' +
+          `  mochi deploy fly runner ${app} --allow '<globs>'\n`
+      );
+    }
+    const have = await secretNames(app);
+    const missing = [HOST_SECRET, TOKEN_SECRET, WAKE_SECRET].filter((n) => !have.includes(n));
+    if (missing.length > 0) {
+      die(
+        `The app is missing ${missing.join(', ')}, so the machine deployed\n` +
+          'here could not serve any vault. The full deploy sets them:\n\n' +
+          `  mochi deploy fly runner ${app}\n`
+      );
+    }
+    if (!(await namedVolume(app, VOLUME_NAME))) {
+      die(`The app has no '${VOLUME_NAME}' volume. The full deploy creates it:\n\n  mochi deploy fly runner ${app}\n`);
+    }
+    const settings = resolveSettings(a, await liveSettings(app));
+    console.log(`==> Updating '${app}' (${appUrl(app)}), touching nothing but the machine`);
+    await flyDeploy(app, a, settings, buildRoot, image);
+    console.log('');
+    console.log(`==> Deployed: ${appUrl(app)}`);
+    console.log('');
+    console.log('The registration, the runner token, and the wake address were left as they');
+    console.log(`were. It stops after ${settings.idle} with no job, and the vault starts it again`);
+    console.log('when one is waiting.');
+    return;
+  }
 
   // The vault first: a runner with no vault to serve is nothing, and finding
   // out that the login is missing after creating a Fly app would be a poor
@@ -432,57 +549,7 @@ export async function deployFlyRunnerCmd(args: string[], usage: () => never): Pr
   const set = await fly(['secrets', 'import', '-a', app, '--stage'], staged.join('\n') + '\n');
   if (set.code !== 0) die(`Could not set the secrets:\n${set.stderr.trim() || set.stdout.trim()}`);
 
-  const config = writeTempConfig(app, settings);
-  if (buildRoot !== null) {
-    console.log(`==> Building ${buildRoot} ${a.localBuild ? 'with the local Docker' : "on Fly's builder"}`);
-  } else {
-    console.log(`==> Deploying ${image}`);
-  }
-  const code = await flyStream(
-    [
-      'deploy',
-      '--app',
-      app,
-      '--config',
-      config,
-      ...(buildRoot !== null
-        ? ['--dockerfile', path.join(buildRoot, 'Dockerfile.runner'), ...(a.localBuild ? ['--local-only'] : [])]
-        : ['--image', image as string]),
-      '--ha=false',
-      '--yes',
-    ],
-    buildRoot ?? undefined
-  );
-  fs.rmSync(path.dirname(config), { recursive: true, force: true });
-  if (code !== 0) {
-    console.error('');
-    console.error('The deploy failed. The app, the volume, and the registration survive, so fix the');
-    console.error('cause and run the same command again.');
-    if (buildRoot === null && a.image === null) {
-      // Named as the likely cause rather than as one possibility among many,
-      // because it is the one every early deploy hits: the runner image is
-      // published per release like the vault's, so a version of the CLI newer
-      // than the newest release has no image to pull. Fly reports a package
-      // that is absent, and one that is private, with the same message about
-      // authentication, and a package newly published to GHCR is private
-      // until someone says otherwise.
-      console.error('');
-      console.error(`If Fly could not fetch ${image}:`);
-      console.error('');
-      console.error('  - It may not be published. The runner image is built per release, so a CLI');
-      console.error('    newer than the newest release asks for a tag that does not exist yet.');
-      console.error('  - It may be private. A package newly published to GHCR is private until it');
-      console.error('    is made public, and Fly reports that as an authentication error too.');
-      console.error('');
-      console.error('Either way, this deploys the checkout you are running instead:');
-      console.error('');
-      console.error(`  mochi deploy fly runner ${app} --from-source`);
-      console.error('');
-      console.error('or --image <ref> deploys some other tag.');
-    }
-    process.exit(1);
-  }
-
+  await flyDeploy(app, a, settings, buildRoot, image);
   // A machine is started by the deploy and will stop itself once it has been
   // idle for the configured time. Saying so is worth a line, because a
   // `deploy fly` that ends with a stopped machine looks like a failure to

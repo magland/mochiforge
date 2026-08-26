@@ -123,6 +123,8 @@ A systemd timer, a launchd job, or a cron line on any machine you keep running d
 
 The other cadence is on a build rather than on a clock: deploy when a new image exists, which is what this repository does to the vaults it runs itself. The deploy job in `.github/workflows/image.yml` lists them, and runs once the image has been pushed and checked, passing `--image` the exact tag that run built. That is the one difference from the scheduled form above, and it matters for a main build, whose image is tagged `main` and which no CLI version asks for by itself.
 
+Whichever cadence updates a vault should update its runner in the same breath. A runner and the vault it serves speak one protocol, and a runner asleep through a vault update wakes into one it no longer speaks: it still takes jobs, but every report it makes is refused, so runs fail with no log lines while the runner believes it is working. `mochi deploy fly runner <app> --image-only` is the update for a pipeline: it moves the machine to the new image and touches nothing else, no registration, no token, no wake rewrite, so it needs the same Fly credential the vault deploy needs and no vault login. The deploy job in `image.yml` does exactly this for the runner beside each vault it deploys.
+
 Two costs, worth choosing deliberately rather than discovering. A vault is one machine on one volume, so every update is a restart, and a restart cuts whatever clone or push was in flight; weekly at a quiet hour is the cadence to want, and nightly buys nothing, since the published tags move only when a release is cut. And an unattended deploy has no notion of rolling back, so if a release does break something the repair is a deploy that pins the previous version by hand:
 
 ```bash

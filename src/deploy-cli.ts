@@ -287,7 +287,11 @@ export interface MachineInfo {
   id: string;
   state?: string;
   region?: string;
-  config?: { image?: string; guest?: { cpu_kind?: string; cpus?: number; memory_mb?: number } };
+  config?: {
+    image?: string;
+    env?: Record<string, string>;
+    guest?: { cpu_kind?: string; cpus?: number; memory_mb?: number };
+  };
 }
 
 export async function appExists(app: string): Promise<boolean> {
