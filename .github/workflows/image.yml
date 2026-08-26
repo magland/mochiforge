@@ -239,15 +239,21 @@ jobs:
           - app: vault1
             command: deploy fly vault1
             image: image
+            token: FLY_API_TOKEN
           # The runner beside it. A runner and the vault it serves speak one
           # protocol (the lease headers are named after the project, and the
           # rename proved what happens when only one side moves), so the runner
           # follows the vault on every build. --image-only updates the machine
           # and touches neither the vault's registry nor the app's secrets,
           # which is what lets this job run with only the Fly credential too.
+          # Each app has a Fly deploy token scoped to itself, so each entry
+          # names the secret holding its own; one credential per app is the
+          # narrowest arrangement, and a token scoped to the vault cannot see
+          # the runner app at all.
           - app: vault1-runner
             command: deploy fly runner vault1-runner --image-only
             image: runner-image
+            token: FLY_API_TOKEN_RUNNER
     steps:
       # The CLI that drives the deploy is this commit's, so it stays in step
       # with the image it is deploying.
@@ -273,4 +279,4 @@ jobs:
         run: node dist/index.js ${{ matrix.command }} --image "$IMAGE"
         env:
           IMAGE: ${{ needs.image.outputs[matrix.image] }}
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_API_TOKEN: ${{ secrets[matrix.token] }}
