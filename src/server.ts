@@ -21,7 +21,8 @@ import { registerReleases } from './releases';
 import { createLfsStore } from './lfsstore';
 import { COLLECTIONS_DIR, REPOS_DIR, repoPath } from './layout';
 import { faviconSvg } from './logo';
-import { migrateLayout, migratePermissions } from './migrate';
+import { startMaintenance } from './maintenance';
+import { migrateLayout, migratePermissions, migratePushPolicy } from './migrate';
 import { repoRole } from './perms';
 import { registerRedirects } from './redirects';
 import { displayName, listCollections, listRepoDirs } from './scan';
@@ -140,6 +141,12 @@ export function createApp(root: string) {
   const permNotes = migratePermissions(root);
   if (permNotes) {
     for (const note of permNotes) console.log(`permissions: ${note}`);
+  }
+  // And a vault from before force pushes were allowed, whose repositories
+  // would otherwise go on refusing them while every new one accepted them.
+  const unfrozen = migratePushPolicy(root);
+  if (unfrozen.length > 0) {
+    console.log(`push policy: force pushes now allowed on ${unfrozen.join(', ')}`);
   }
 
   const app = express();
@@ -386,6 +393,10 @@ export function createApp(root: string) {
   // The CI engine plans and schedules workflow runs; jobs execute on runners
   // elsewhere (mochi runner run), never in this process.
   const engine = new CiEngine(root, () => loadConfig(root).ci);
+  // Unreachable objects, from a force push or a branch deleted or a history
+  // rewritten, are collected on a slow timer with a generous grace period. See
+  // src/maintenance.ts for why it is safe to run beside live traffic.
+  startMaintenance(root);
 
   // A runner that stops when it has nothing to do cannot be told that it has
   // something to do, so the vault starts it: this watches for a queued job

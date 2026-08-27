@@ -125,7 +125,17 @@ Abilities in the interface mirror the roles exactly. The write role on a reposit
 
 File edits use optimistic concurrency: the edit form records the commit it was loaded against, and if the branch moves before you commit, the edit is refused with a conflict page rather than clobbering the other change. Web commits are authored as `<username> <username@noreply.<host>>`. Contributor listings resolve that synthetic address back to the user, and an administrator can list a user's real git author emails on the user's admin page (`/admin/users/<name>`, stored as an `emails` field in `vault.json`), so one person pushing under their own identity and editing in the browser shows as one contributor rather than two. That page is also where each token a user holds is listed and revoked; revocation applies to the next request, for git and for web sessions alike.
 
-One deliberate asymmetry: repositories created by push set `receive.denyDeletes`, so `git push --delete` is refused, while the web interface allows branch deletion after confirmation. The receive hook guards against accidents; a confirmed click is explicit intent.
+Force pushes are allowed, as they are on GitHub for a branch nothing protects. Rewriting a branch is how a history is corrected, and refusing it would leave `git filter-repo` and `git rebase` with no way to reach the vault. What a rewrite abandons is collected by the sweep described under Garbage collection below.
+
+One deliberate asymmetry: repositories set `receive.denyDeletes`, so `git push --delete` is refused, while the web interface and the API allow branch deletion after confirmation. The receive configuration guards against accidents; a confirmed click is explicit intent.
+
+## Garbage collection
+
+Git adds objects and never removes them. A force push, a deleted branch, or a rewritten history leaves the commits, trees, and blobs it abandoned in the object store: unreachable from any ref, still readable by anyone who knows the hash, and still counted against the disk. Only `git gc` walks out from the refs and drops what it could not reach, and git's own automatic pass is tuned for a working copy accumulating loose objects rather than a bare repository receiving packs, so on a forge it effectively never fires.
+
+The vault therefore sweeps for itself. Every six hours it collects each repository that has changed since it was last collected, one at a time, recording each pass in a `mochi-last-gc` file in the repository directory. Objects unreachable but newer than two days are kept, which is what makes the sweep safe to run beside live traffic: a push uploads its objects before it moves the branch that makes them reachable, so for a moment those objects look exactly like abandoned ones, and a collection that spared nothing could delete a push in flight.
+
+The consequence worth knowing is that removal is not immediate. A file pushed by mistake and then rewritten out of the history is unreachable at once, so it is gone from every branch, tag, clone, and listing; but until a sweep passes over it, it can still be fetched by naming its commit directly. Rotate a secret that was pushed rather than counting on the sweep to contain it.
 
 ## Renaming a repository or a collection
 

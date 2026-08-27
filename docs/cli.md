@@ -295,7 +295,7 @@ git push http://127.0.0.1:3000/mycollection/myrepo main
 # git prompts: username 'jeremy', password '<token>'
 ```
 
-Pushing to a repository that does not exist yet creates it, provided you may create there: your own collection, one you own, or anywhere for a site admin. The collection directory is created as needed, and after the first push HEAD points at the pushed branch. Repositories created this way are public (a push has no way to carry the private flag; flip it in the settings or with `mochi repo edit --private` afterwards) and get `receive.denyNonFastForwards`, `receive.denyDeletes`, and a `receive.maxInputSize` limit of 2 GiB. Anonymous fetch stays open on public repositories; a private one asks for the same credentials a push does and serves only readers. The username in the Basic pair may be anything when the password is a valid token: a token identifies its owner by itself, as on GitHub.
+Pushing to a repository that does not exist yet creates it, provided you may create there: your own collection, one you own, or anywhere for a site admin. The collection directory is created as needed, and after the first push HEAD points at the pushed branch. Repositories created this way are public (a push has no way to carry the private flag; flip it in the settings or with `mochi repo edit --private` afterwards) and get `receive.denyDeletes` and a `receive.maxInputSize` limit of 2 GiB. Anonymous fetch stays open on public repositories; a private one asks for the same credentials a push does and serves only readers. The username in the Basic pair may be anything when the password is a valid token: a token identifies its owner by itself, as on GitHub.
 
 ### Not typing the token every time
 

@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { COLLECTIONS_DIR, REPOS_DIR, collectionsDir } from './layout';
@@ -299,4 +300,48 @@ export function migratePermissions(root: string): string[] | null {
 
   finishPermsMigration(root, siteAdmins);
   return notes;
+}
+
+/**
+ * Unset `receive.denyNonFastForwards` on every repository that still carries
+ * it.
+ *
+ * Repositories created before force pushes were allowed were configured to
+ * refuse any push that moved a branch to a commit that was not a descendant of
+ * where it already was. Nothing overrides that per push, so a vault upgraded
+ * from that era would keep refusing force pushes on its existing repositories
+ * while allowing them on every new one, which is the sort of split nobody could
+ * diagnose from the outside.
+ *
+ * The setting is read from the repository's own config file before git is run,
+ * so a vault whose repositories are all current pays a small read each and
+ * spawns nothing. Deletes are deliberately left refused: see createRepo.
+ */
+export function migratePushPolicy(root: string): string[] {
+  const changed: string[] = [];
+  for (const { name: collection } of listCollections(root)) {
+    for (const dirName of listRepoDirs(root, collection)) {
+      const dir = path.join(collectionsDir(root), collection, REPOS_DIR, dirName);
+      const configFile = path.join(dir, 'config');
+      let text: string;
+      try {
+        text = fs.readFileSync(configFile, 'utf8');
+      } catch {
+        continue;
+      }
+      if (!/denyNonFastForwards/i.test(text)) continue;
+      try {
+        execFileSync('git', ['-C', dir, 'config', '--unset-all', 'receive.denyNonFastForwards'], {
+          stdio: 'ignore',
+        });
+        changed.push(`${collection}/${displayName(dirName)}`);
+      } catch {
+        // A repository whose config could not be changed keeps refusing force
+        // pushes, which is the behaviour it has had all along. It is named so
+        // that the operator can unset it by hand.
+        changed.push(`${collection}/${displayName(dirName)} (failed)`);
+      }
+    }
+  }
+  return changed;
 }

@@ -213,7 +213,12 @@ export async function createRepo(
   fs.mkdirSync(reposDir(root, collection), { recursive: true });
   const dir = repoPath(root, collection, `${name}.git`);
   await execGit(root, ['init', '--bare', '--initial-branch=main', dir]);
-  await execGit(dir, ['config', 'receive.denyNonFastForwards', 'true']);
+  // Deletes are refused on push and force pushes are not, which is GitHub's
+  // arrangement for a branch nothing protects: rewriting a branch is how a
+  // history is corrected, and what it abandons is collected by the sweep in
+  // src/maintenance.ts, while deleting one is done through the web or the API,
+  // where it is confirmed. A vault upgraded from before this ran with
+  // receive.denyNonFastForwards set; migratePushPolicy unsets it.
   await execGit(dir, ['config', 'receive.denyDeletes', 'true']);
   await execGit(dir, ['config', 'receive.maxInputSize', String(2 * 1024 * 1024 * 1024)]);
   // Written before the repository is announced anywhere, so a repository asked
@@ -263,7 +268,7 @@ export async function forkRepo(
   await execGit(root, ['clone', '--bare', source.dir, dir]);
   await execGit(dir, ['remote', 'remove', 'origin']).catch(() => undefined);
   await execGit(dir, ['config', 'mochi.forkedFrom', `${collection}/${name}`]);
-  await execGit(dir, ['config', 'receive.denyNonFastForwards', 'true']);
+  // As createRepo: deletes refused on push, force pushes allowed.
   await execGit(dir, ['config', 'receive.denyDeletes', 'true']);
   await execGit(dir, ['config', 'receive.maxInputSize', String(2 * 1024 * 1024 * 1024)]);
   const description = fs.existsSync(path.join(source.dir, 'description'))

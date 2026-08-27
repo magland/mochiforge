@@ -2527,6 +2527,33 @@ run_code "and with no remote for this vault it is a usage error" 2 \
   sh -c "cd '$TMP/credclone' && git remote set-url origin https://github.com/owner/other.git && { $(printf '%s ' env HOME="$CRED_HOME" XDG_CONFIG_HOME="$CRED_HOME/.config" GIT_CONFIG_GLOBAL="$CRED_HOME/.gitconfig" GIT_ASKPASS="$TMP/askpass") node '$PWD/dist/index.js' repo view; code=\$?; git remote set-url origin '$BASE/demo/proj'; exit \$code; }"
 err_has "naming all three ways to say" 'MOCHI_REPO'
 
+# ---- force pushes ----
+#
+# Allowed, as on GitHub for a branch nothing protects. Rewriting a branch is how
+# a history is corrected, and what the rewrite abandons is collected by the gc
+# sweep in src/maintenance.ts. Deleting a branch by push stays refused: that is
+# the deliberate asymmetry docs/vault.md describes, and it is checked here so
+# that allowing the one does not quietly allow the other.
+rm -rf "$TMP/forcesrc"
+git init -q "$TMP/forcesrc"
+( cd "$TMP/forcesrc"
+  git config user.email smoke@example.org
+  git config user.name Smoke
+  echo one > f.txt && git add f.txt && git commit -qm "first"
+  echo two >> f.txt && git commit -qam "second"
+) > /dev/null 2>&1
+FORCE_URL="http://owner:$OWNER_TOKEN@127.0.0.1:$PORT/apis/forced"
+run_ok "a repository to force push at" git -C "$TMP/forcesrc" push -q "$FORCE_URL" main
+git -C "$TMP/forcesrc" reset -q --hard HEAD~1
+git -C "$TMP/forcesrc" commit -q --allow-empty -m "rewritten"
+REWRITTEN="$(git -C "$TMP/forcesrc" rev-parse HEAD)"
+run_ok "a force push is accepted" git -C "$TMP/forcesrc" push -q --force "$FORCE_URL" main
+api "the branch listing after the force push" 200 "$BASE/api/repos/apis/forced/branches"
+body_has "shows the rewritten commit at the tip" "\"sha\":\"$REWRITTEN\""
+run_fails "deleting a branch by push is still refused" git -C "$TMP/forcesrc" push -q "$FORCE_URL" :main
+api "so the branch is still there" 200 "$BASE/api/repos/apis/forced/branches"
+body_has "at the commit the force push left" "\"sha\":\"$REWRITTEN\""
+
 # ---- mochi import and collections, from the CLI ----
 
 # Importing is a client-side operation and `mochi import` is
