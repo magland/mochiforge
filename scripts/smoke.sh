@@ -2714,6 +2714,46 @@ api "a repository admin enables the site" 200 -X PATCH -H "$JSON_CT" \
 body_has "and the api echoes it" '"enabled":true'
 check "site served" 200 "$BASE/pushed/created/site/"
 body_has "site content" 'site ok'
+
+# The same switch on the web, in the settings page's Site box. The signed-in
+# owner is a site admin, so the custom domain field is rendered too; a
+# repository admin who is not one sees where the domain answers instead.
+check "the settings page carries a Site box" 200 -b "$JAR" "$BASE/pushed/created/settings"
+body_has "saying the site is enabled" 'site is <b>enabled</b>'
+body_has "with the source it is published by" 'name="source"'
+body_has "and a custom domain field for a site admin" 'name="domain"'
+SITE_CSRF="$(csrf_of)"
+check "the form disables the site" 302 -b "$JAR" "$BASE/pushed/created/settings/site" \
+  --data-urlencode "csrf=$SITE_CSRF" --data-urlencode enabled=false
+check "after which nothing is served" 404 "$BASE/pushed/created/site/"
+check "and the form enables it again" 302 -b "$JAR" "$BASE/pushed/created/settings/site" \
+  --data-urlencode "csrf=$SITE_CSRF" --data-urlencode enabled=true
+check "serving what it did before" 200 "$BASE/pushed/created/site/"
+body_has "unchanged, since the files never left" 'site ok'
+# A custom domain needs no sites host: the mapping is consulted on its own.
+check "a site admin attaches a domain from the form" 302 -b "$JAR" "$BASE/pushed/created/settings/site" \
+  --data-urlencode "csrf=$SITE_CSRF" --data-urlencode source=copy --data-urlencode domain=formed.example.test
+check "which serves the site" 200 "$BASE/" -H 'Host: formed.example.test'
+body_has "at the root of its own origin" 'site ok'
+check "the settings page shows where it answers" 200 -b "$JAR" "$BASE/pushed/created/settings"
+body_has "naming the domain" 'formed.example.test'
+check "a domain that is not a hostname is refused" 400 -b "$JAR" "$BASE/pushed/created/settings/site" \
+  --data-urlencode "csrf=$SITE_CSRF" --data-urlencode source=copy --data-urlencode 'domain=not a host'
+body_has "saying what one looks like" 'hostname of at least two labels'
+check "an empty domain field detaches it" 302 -b "$JAR" "$BASE/pushed/created/settings/site" \
+  --data-urlencode "csrf=$SITE_CSRF" --data-urlencode source=copy --data-urlencode domain=
+# A detached name is not a site hostname at all, so it stops being answered as
+# one and falls through to the forge, which answers on any hostname it is
+# reached by. That is what a stale DNS record pointing here would get.
+check "after which the domain serves no site" 200 "$BASE/" -H 'Host: formed.example.test'
+body_lacks "the site is gone from it" 'site ok'
+# A save leaves the reader at the box the form was in rather than at the top of
+# the page, and the confirmation is rendered inside that box.
+check "the form's redirect names the box it came from" 302 -D "$TMP/headers" -b "$JAR" "$BASE/pushed/created/settings/site" \
+  --data-urlencode "csrf=$SITE_CSRF" --data-urlencode source=copy
+header_has "anchored at the Site box" 'location: .*in=site#site'
+check "and the page renders the confirmation there" 200 -b "$JAR" "$BASE/pushed/created/settings?msg=Saved.&in=site"
+body_has "inside the box the reader was in" 'id="site"'
 # The collection listing points at the site directly, so a visitor scanning a
 # collection reaches the published page without going through the repository.
 check "the collection listing is served" 200 "$BASE/pushed"

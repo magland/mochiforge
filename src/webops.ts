@@ -26,7 +26,7 @@ import {
   reservedRepoSuffix,
   siteDir,
 } from './scan';
-import { repoDomain } from './domains';
+import { clearRepoDomain, repoDomain, setRepoDomain } from './domains';
 import { editSiteSettings, isUsableSiteLabel, siteLabelConflict, siteSettings } from './sitesettings';
 import {
   Viewer,
@@ -1782,6 +1782,11 @@ export function registerWebOps(
         return;
       }
       const msg = typeof req.query.msg === 'string' ? req.query.msg : undefined;
+      // Which box the message belongs in, so a save is confirmed where the
+      // form was rather than at the top of a page the reader has been thrown
+      // back to. A value naming no box reads as none, like an unknown sort.
+      const inParam = typeof req.query.in === 'string' ? req.query.in : '';
+      const section = forms.isSettingsSection(inParam) ? inParam : undefined;
       const access = repoAccess(loaded.repo.dir);
       const settings = siteSettings(loaded.repo.dir);
       res.type('html').send(
@@ -1801,7 +1806,9 @@ export function registerWebOps(
             sitesHost: loadConfig(root).sites.host,
             dirExists: siteDir(root, loaded.repo.collection, loaded.repo.name) !== null,
           },
-          msg
+          msg,
+          undefined,
+          section
         )
       );
     })
@@ -1815,7 +1822,7 @@ export function registerWebOps(
       if (!viewer) return;
       const loaded = await loadRepo(root, req, res, viewer);
       if (!loaded) return;
-      const backUrl = `${urlOf(loaded.repo)}/settings`;
+      const backUrl = settingsBack(loaded.repo, 'general');
       if (!atLeast(loaded.role, 'write')) {
         fail(res, 403, `You do not have the write role on ${loaded.repo.collection}/${loaded.repo.name}.`, viewer, backUrl);
         return;
@@ -1848,7 +1855,7 @@ export function registerWebOps(
         }
         await ops.setDefaultBranch(loaded.repo.dir, defaultBranch);
       }
-      res.redirect(`${backUrl}?msg=${encodeURIComponent('Settings saved.')}`);
+      res.redirect(settingsBack(loaded.repo, 'general', 'Settings saved.'));
     })
   );
 
@@ -1882,7 +1889,14 @@ export function registerWebOps(
       }
       const now = repoTopics(loaded.repo.dir);
       const msg = now.length === 0 ? 'Topics cleared.' : `Topics saved: ${now.join(', ')}.`;
-      res.redirect(`${backUrl}?msg=${encodeURIComponent(msg)}`);
+      // Topics live in the General box, so a post from the settings page is
+      // confirmed there; one from the About panel goes back to the repository
+      // page, which has no box to name.
+      res.redirect(
+        field(req, 'next') === 'repo'
+          ? `${backUrl}?msg=${encodeURIComponent(msg)}`
+          : settingsBack(loaded.repo, 'general', msg)
+      );
     })
   );
 
@@ -1890,6 +1904,18 @@ export function registerWebOps(
 
   // Both take the admin role: who may see or write a repository is decided by
   // the people who administer it, the same rule the JSON API applies.
+
+  /**
+   * Where a settings form sends the reader afterwards: back to the box it was
+   * posted from, carrying its confirmation. The fragment is what scrolls
+   * there, so a save no longer throws the reader to the top of the page, and
+   * `in=` names the same box in the query because a fragment never reaches the
+   * server and the page has to know which box to show the message in.
+   */
+  function settingsBack(repo: { collection: string; name: string }, section: string, msg?: string): string {
+    const query = msg === undefined ? '' : `?msg=${encodeURIComponent(msg)}&in=${section}`;
+    return `${urlOf(repo)}/settings${query}#${section}`;
+  }
 
   async function loadForRepoAdmin(req: Request, res: Response, viewer: Viewer): Promise<LoadedRepo | null> {
     const loaded = await loadRepo(root, req, res, viewer);
@@ -1915,23 +1941,22 @@ export function registerWebOps(
       if (!viewer) return;
       const loaded = await loadForRepoAdmin(req, res, viewer);
       if (!loaded) return;
-      const backUrl = `${urlOf(loaded.repo)}/settings`;
       const priv = field(req, 'private') === 'true';
       setRepoPrivate(loaded.repo.dir, priv);
       const msg = priv
         ? 'This repository is now private: visible to its collaborators, the collection’s owners, and site admins.'
         : 'This repository is now public: anyone can read it.';
-      res.redirect(`${backUrl}?msg=${encodeURIComponent(msg)}`);
+      res.redirect(settingsBack(loaded.repo, 'access', msg));
     })
   );
 
-  // The site's switch, source, and hostname label, from the Site box on the
-  // settings page. Admin, like visibility: enabling a site publishes whatever
-  // the directory holds to everyone. Each field is applied only when the form
-  // carried it, so the enable/disable button and the source-and-label form can
-  // post to one route without clearing each other's fields. Custom domains are
-  // deliberately not here: attaching one takes a site admin, through the API
-  // or the CLI.
+  // The site's switch, source, hostname label, and custom domain, from the
+  // Site box on the settings page. Admin, like visibility: enabling a site
+  // publishes whatever the directory holds to everyone. Each field is applied
+  // only when the form carried it, so the enable/disable button and the
+  // config form can post to one route without clearing each other's fields.
+  // The domain field is rendered only for a site admin and re-checked here,
+  // since attaching a hostname is the operator's act.
   app.post(
     '/:collection/:repo/settings/site',
     form,
@@ -1940,7 +1965,7 @@ export function registerWebOps(
       if (!viewer) return;
       const loaded = await loadForRepoAdmin(req, res, viewer);
       if (!loaded) return;
-      const backUrl = `${urlOf(loaded.repo)}/settings`;
+      const backUrl = settingsBack(loaded.repo, 'site');
       const body = req.body as Record<string, unknown>;
       const label = field(req, 'label').trim();
       if (body.label !== undefined && label !== '') {
@@ -1965,18 +1990,43 @@ export function registerWebOps(
         fail(res, 400, 'The site source must be copied files or workflow deploys.', viewer, backUrl);
         return;
       }
-      const settings = editSiteSettings(loaded.repo.dir, (s) => {
-        if (body.enabled !== undefined) s.enabled = field(req, 'enabled') === 'true';
-        if (body.source !== undefined) s.source = source as 'copy' | 'actions';
-        if (body.label !== undefined) s.label = label;
-      });
+      if (body.domain !== undefined) {
+        if (!isSiteAdmin(viewer.auth)) {
+          fail(res, 403, 'Attaching a custom domain takes a site admin.', viewer, backUrl);
+          return;
+        }
+        const domain = field(req, 'domain').trim();
+        if (domain === '') {
+          clearRepoDomain(root, loaded.repo.collection, loaded.repo.name);
+        } else {
+          const problem = setRepoDomain(root, loaded.repo.collection, loaded.repo.name, domain);
+          if (problem) {
+            fail(
+              res,
+              problem.kind === 'conflict' ? 409 : 400,
+              `The domain was refused: ${problem.message}.`,
+              viewer,
+              backUrl
+            );
+            return;
+          }
+        }
+      }
+      const changingSettings = body.enabled !== undefined || body.source !== undefined || body.label !== undefined;
+      const settings = changingSettings
+        ? editSiteSettings(loaded.repo.dir, (s) => {
+            if (body.enabled !== undefined) s.enabled = field(req, 'enabled') === 'true';
+            if (body.source !== undefined) s.source = source as 'copy' | 'actions';
+            if (body.label !== undefined) s.label = label;
+          })
+        : siteSettings(loaded.repo.dir);
       const msg =
         body.enabled !== undefined
           ? settings.enabled
             ? 'The site is now enabled: the files in its site directory are served to everyone.'
             : 'The site is now disabled: its files stay on disk but nothing is served, and workflow deploys are refused.'
           : 'Site settings saved.';
-      res.redirect(`${backUrl}?msg=${encodeURIComponent(msg)}`);
+      res.redirect(settingsBack(loaded.repo, 'site', msg));
     })
   );
 
@@ -1988,7 +2038,7 @@ export function registerWebOps(
       if (!viewer) return;
       const loaded = await loadForRepoAdmin(req, res, viewer);
       if (!loaded) return;
-      const backUrl = `${urlOf(loaded.repo)}/settings`;
+      const backUrl = settingsBack(loaded.repo, 'access');
       const username = field(req, 'username').trim();
       const role = field(req, 'role');
       if (role !== 'read' && role !== 'write' && role !== 'admin') {
@@ -2003,7 +2053,7 @@ export function registerWebOps(
         return;
       }
       setCollaborator(loaded.repo.dir, username, role);
-      res.redirect(`${backUrl}?msg=${encodeURIComponent(`${username} now has the ${role} role here.`)}`);
+      res.redirect(settingsBack(loaded.repo, 'access', `${username} now has the ${role} role here.`));
     })
   );
 
@@ -2015,14 +2065,14 @@ export function registerWebOps(
       if (!viewer) return;
       const loaded = await loadForRepoAdmin(req, res, viewer);
       if (!loaded) return;
-      const backUrl = `${urlOf(loaded.repo)}/settings`;
+      const backUrl = settingsBack(loaded.repo, 'access');
       const username = field(req, 'username').trim();
       if (repoAccess(loaded.repo.dir).collaborators[username] === undefined) {
         fail(res, 404, `${username} is not a collaborator here.`, viewer, backUrl);
         return;
       }
       removeCollaborator(loaded.repo.dir, username);
-      res.redirect(`${backUrl}?msg=${encodeURIComponent(`Removed ${username}.`)}`);
+      res.redirect(settingsBack(loaded.repo, 'access', `Removed ${username}.`));
     })
   );
 

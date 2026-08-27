@@ -751,6 +751,19 @@ export interface SettingsSiteInfo {
   dirExists: boolean;
 }
 
+/**
+ * The settings page's boxes, as the ids a form posts back to. Each operation
+ * redirects to its own box, so a save leaves the reader where the form was
+ * rather than at the top of the page, and the confirmation is rendered inside
+ * that box rather than above everything. `?in=` names the box because a
+ * fragment never reaches the server.
+ */
+export type SettingsSection = 'general' | 'access' | 'site';
+
+export function isSettingsSection(value: string): value is SettingsSection {
+  return value === 'general' || value === 'access' || value === 'site';
+}
+
 export function settingsPage(
   ctx: RepoCtx,
   description: string,
@@ -758,9 +771,14 @@ export function settingsPage(
   access: { collaborators: { username: string; role: string }[]; owners: string[] },
   site: SettingsSiteInfo,
   msg?: string,
-  error?: string
+  error?: string,
+  section?: SettingsSection
 ): string {
   const base = repoUrl(ctx);
+  // A message belongs to the box whose form produced it; one that names no box
+  // (a hand-typed URL, an older link) stays at the top, where it always was.
+  const flashIn = (name: SettingsSection) => (section === name ? flashBanner(msg) : '');
+  const errorIn = (name: SettingsSection) => (section === name ? errorBanner(error) : '');
   const branchOptions = ctx.branches.map(
     (b) => html`<option value="${b.name}"${b.name === ctx.defaultBranch ? raw(' selected') : ''}>${b.name}</option>`
   );
@@ -769,7 +787,8 @@ export function settingsPage(
       ? html`<div class="field"><label for="defaultBranch">Default branch</label><select id="defaultBranch" name="defaultBranch">${branchOptions}</select></div>`
       : '';
   const settingsForm = ctx.canPush
-    ? html`<div class="box settings-box"><div class="box-header">${icon('sliders')}General</div><div class="box-body">
+    ? html`<div class="box settings-box" id="general"><div class="box-header">${icon('sliders')}General</div><div class="box-body">
+${flashIn('general')}${errorIn('general')}
 <form method="post" action="${base}/settings">
 ${csrfField(ctx.viewer!)}
 <div class="field"><label for="description">Description</label><input type="text" id="description" name="description" value="${description}"><p class="muted small">Shown beside the repository in listings and in the About panel.</p></div>
@@ -799,7 +818,8 @@ ${csrfField(ctx.viewer!)}
       )}, and the user the collection is named after) hold the admin role here without being listed.</p>`
     : html`<p class="muted small">The user the collection is named after, and any owners added to it, hold the admin role here without being listed.</p>`;
   const accessBox = ctx.canAdmin
-    ? html`<div class="box settings-box"><div class="box-header">${icon('people')}Access</div><div class="box-body">
+    ? html`<div class="box settings-box" id="access"><div class="box-header">${icon('people')}Access</div><div class="box-body">
+${flashIn('access')}${errorIn('access')}
 <form method="post" action="${base}/settings/visibility">
 ${csrfField(ctx.viewer!)}
 <input type="hidden" name="private" value="${ctx.isPrivate ? 'false' : 'true'}">
@@ -847,9 +867,17 @@ ${csrfField(ctx.viewer!)}
     : site.dirExists
       ? html`This repository's site is <b>disabled</b>. The files in <span class="mono">${ctx.repo}.site</span> stay on disk but are not served; enabling the site brings them straight back.`
       : html`This repository's site is <b>disabled</b>. Enabling it serves static files from a <span class="mono">${ctx.repo}.site</span> directory next to the repository, with an index.html at its root.`;
+  // The domain is editable in place only by a site admin; everyone else sees
+  // where it answers, or who to ask.
+  const viewerIsSiteAdmin = ctx.viewer !== null && isSiteAdmin(ctx.viewer.auth);
   const domainNote = site.domain
     ? html`<p>It answers at <a href="https://${site.domain}/">https://${site.domain}/</a>, its custom domain; its other hostnames redirect there.</p>`
-    : html`<p class="muted small">A vault admin can attach a custom domain with <span class="mono">mochi repo edit ${ctx.collection}/${ctx.repo} --site-domain docs.example.org</span>.</p>`;
+    : viewerIsSiteAdmin
+      ? ''
+      : html`<p class="muted small">A vault admin can attach a custom domain, in this box or with <span class="mono">mochi repo edit ${ctx.collection}/${ctx.repo} --site-domain docs.example.org</span>.</p>`;
+  const domainField = viewerIsSiteAdmin
+    ? html`<div class="field"><label for="siteDomain">Custom domain</label><input type="text" id="siteDomain" name="domain" value="${site.domain ?? ''}" placeholder="docs.example.org"><p class="muted small">A hostname of the site's own; empty detaches it. Point its DNS record at this vault and cover it with a certificate yourself. It becomes the site's canonical origin, and the site's other hostnames redirect there. Site admins only, since the name is the operator's to answer for.</p></div>`
+    : '';
   const labelField = site.sitesHost
     ? html`<div class="field"><label for="siteLabel">Hostname label</label><input type="text" id="siteLabel" name="label" value="${site.label}" placeholder="${derivedLabel ?? ''}"><p class="muted small">The label under <span class="mono">${site.sitesHost}</span> the site is served from: lowercase letters, digits, and single interior hyphens. ${
         derivedLabel
@@ -866,11 +894,13 @@ ${csrfField(ctx.viewer!)}
 <option value="actions"${site.source === 'actions' ? raw(' selected') : ''}>Workflow deploys</option>
 </select><p class="muted small">Copied files means whatever can write the vault publishes by writing the directory, and a workflow's deploy step is refused. Workflow deploys additionally lets a run's <span class="mono">deploy-pages</span> step publish the site.</p></div>
 ${labelField}
+${domainField}
 <button type="submit" class="btn btn-primary">${icon('check')}<span>Save</span></button>
 </form>`
     : '';
   const siteBox = ctx.canAdmin
-    ? html`<div class="box settings-box"><div class="box-header">${icon('globe')}Site</div><div class="box-body">
+    ? html`<div class="box settings-box" id="site"><div class="box-header">${icon('globe')}Site</div><div class="box-body">
+${flashIn('site')}${errorIn('site')}
 <p>${siteStatus}</p>
 ${site.enabled ? domainNote : ''}
 <form method="post" action="${base}/settings/site">
@@ -911,8 +941,8 @@ ${csrfField(ctx.viewer!)}
     : '';
   const body = html`${repoHeader(ctx, 'settings')}
 <h2>Settings</h2>
-${flashBanner(msg)}
-${errorBanner(error)}
+${section === undefined ? flashBanner(msg) : ''}
+${section === undefined ? errorBanner(error) : ''}
 ${settingsForm}
 ${accessBox}
 ${siteBox}

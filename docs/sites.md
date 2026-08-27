@@ -127,6 +127,8 @@ mochi repo edit alice/webapp --site-domain docs.example.org
 mochi repo edit alice/webapp --site-domain ''       # detach it
 ```
 
+A site admin also gets a Custom domain field in the Site box of the repository's settings page, doing the same thing; other viewers see where the domain answers, or who to ask. On the API it is `siteDomain` on the PATCH route.
+
 The mapping lives in `<vault>/domains.json`, beside `config.json` and hand-editable like it:
 
 ```json
