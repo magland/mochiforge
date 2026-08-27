@@ -93,7 +93,7 @@ Set one on the vault, from wherever you administer it:
 mochi config set --sites-host vault-sites.example.org
 ```
 
-That writes `sites.host` in the vault's `config.json`, which is read per request, so it is in effect on the next one; `--sites-host ''` clears it again. Hand-editing the file does the same thing, and is what a vault with no CLI to hand still supports.
+That writes `sites.host` in the vault's `config.json`, which is read per request, so it is in effect on the next one; `--sites-host ''` clears it again. The same field is on the vault settings page in the web interface (`/admin/settings`), and hand-editing the file does the same thing, which is what a vault with no CLI to hand still supports.
 
 Each eligible repository's site is then served from `<repo>--<collection>.<sites host>`, so `webapp` in collection `alice` becomes `webapp--alice.vault-sites.example.org`. On that hostname the repository is the origin root: `/index.html` is the site's own, and so are `/assets/style.css` and `/favicon.svg`, which the forge does not shadow there. No session is ever resolved on a sites hostname and no cookie is set on one, so a site cannot see a visitor's session even in principle. Responses carry `X-Content-Type-Options: nosniff` and nothing else; the sandbox is gone, because the origin is now doing that work.
 

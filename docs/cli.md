@@ -253,7 +253,7 @@ Tokens are named by an id rather than by their hash, and neither a token nor its
 
 `--egress-gb-per-day` caps the bytes the vault may send in one UTC day, 20 GB by default and `0` for no cap. Past it, ordinary requests are refused with `503` until the next UTC midnight, while the administration pages and signing in keep working so the cap can be raised from the vault itself. `mochi api /api/egress` shows what has gone out today, per repository, which is the same breakdown `/admin/egress` draws. See [Outgoing bytes](deploying.md#outgoing-bytes).
 
-`network.trustProxy` and the rest of the `limits` block are not reachable here. They are read once when the server starts, since they hold live counters that cannot be rebuilt per request, so a command that changed them would report a change the running server had not made. Edit `config.json` in the vault and restart.
+`network.trustProxy` and the rest of the `limits` block are not reachable here. They are read once when the server starts, since they hold live counters that cannot be rebuilt per request, so a command that changed them would report a change the running server had not made. Edit `config.json` in the vault and restart, or use the vault settings page in the web interface (`/admin/settings`), which writes the same file and says which saved values wait for a restart.
 
 ### Backing up a vault
 

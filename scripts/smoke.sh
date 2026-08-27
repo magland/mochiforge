@@ -1332,6 +1332,45 @@ check "invalid theme falls back" 200 "$BASE/"
 body_has "fallback to default" 'style.css?t=paper'
 printf '{\n  "theme": "paper"\n}\n' > "$VAULT/config.json"
 
+# ---- vault settings, administered from the browser ----
+# The rest of config.json on one page. The sites hostname and CI retention are
+# read per request, so a save is in effect on the next one; the network and
+# limits blocks are read at startup, so the page says which saved values the
+# running server is not yet using rather than pretending they apply.
+check "vault settings page" 200 -b "$JAR" "$BASE/admin/settings"
+body_has "a sites hostname box" 'id="sites"'
+body_has "a ci retention box" 'id="ci"'
+body_has "a network box" 'id="network"'
+body_has "a limits box" 'id="limits"'
+VS_CSRF="$(csrf_of)"
+check "a sites host that is not a hostname is refused" 400 -b "$JAR" "$BASE/admin/settings/sites" \
+  --data-urlencode "csrf=$VS_CSRF" --data-urlencode 'host=not a host'
+check "a sites host is saved" 302 -D "$TMP/headers" -b "$JAR" "$BASE/admin/settings/sites" \
+  --data-urlencode "csrf=$VS_CSRF" --data-urlencode host=smoke-sites.example.test
+header_has "anchored back at its box" 'location: .*in=sites#sites'
+grep -q '"host": "smoke-sites.example.test"' "$VAULT/config.json" || { echo "FAIL: sites host not persisted"; exit 1; }
+PASS=$((PASS+1)); echo "ok: sites host persisted to config.json"
+check "and cleared again" 302 -b "$JAR" "$BASE/admin/settings/sites" \
+  --data-urlencode "csrf=$VS_CSRF" --data-urlencode host=
+check "ci retention is saved" 302 -b "$JAR" "$BASE/admin/settings/ci" \
+  --data-urlencode "csrf=$VS_CSRF" --data-urlencode runs=7 --data-urlencode days=14 --data-urlencode artifactMb=25
+grep -q '"runs": 7' "$VAULT/config.json" || { echo "FAIL: ci retention not persisted"; exit 1; }
+PASS=$((PASS+1)); echo "ok: ci retention persisted to config.json"
+check "a zero concurrency is refused" 400 -b "$JAR" "$BASE/admin/settings/limits" \
+  --data-urlencode "csrf=$VS_CSRF" --data-urlencode requestsPerMinute=600 --data-urlencode authFailures=10 \
+  --data-urlencode clone=0 --data-urlencode push=4 --data-urlencode search=2 --data-urlencode tree=4
+check "changed limits are saved" 302 -b "$JAR" "$BASE/admin/settings/limits" \
+  --data-urlencode "csrf=$VS_CSRF" --data-urlencode requestsPerMinute=900 --data-urlencode authFailures=10 \
+  --data-urlencode clone=4 --data-urlencode push=4 --data-urlencode search=2 --data-urlencode tree=4
+check "and the page says what waits for a restart" 200 -b "$JAR" "$BASE/admin/settings"
+body_has "an amber note naming the pending value" 'restart-note'
+body_has "with the value the running server started with" 'requestsPerMinute</span> 0 (saved: 900)'
+body_has "and how to restart it, since nothing here names a deployment" 'start it again the way it was started'
+check "forwarded headers save too" 302 -b "$JAR" "$BASE/admin/settings/network" \
+  --data-urlencode "csrf=$VS_CSRF" --data-urlencode trustProxy=false
+# Put the file back the way the rest of the suite expects it.
+printf '{\n  "theme": "paper"\n}\n' > "$VAULT/config.json"
+
 # ---- alice's limited abilities ----
 
 check "alice login" 302 -c "$ALICE_JAR" "$BASE/login" \
@@ -1378,6 +1417,9 @@ check "an owner does not reach the admin index" 403 -b "$TMP/collectionadmin.jar
 check "an owner cannot open appearance" 403 -b "$TMP/collectionadmin.jar" "$BASE/admin/appearance"
 check "an owner cannot set the theme" 403 -b "$TMP/collectionadmin.jar" "$BASE/admin/appearance" \
   --data-urlencode "csrf=$CSRF" --data-urlencode theme=terminal
+check "an owner cannot open the vault settings" 403 -b "$TMP/collectionadmin.jar" "$BASE/admin/settings"
+check "an owner cannot save a sites host" 403 -b "$TMP/collectionadmin.jar" "$BASE/admin/settings/sites" \
+  --data-urlencode "csrf=$CSRF" --data-urlencode host=taken.example.test
 # The collection itself is theirs: its settings open, and a rename is theirs
 # to make and to unmake, with the owners file travelling along.
 check "an owner reaches collection settings" 200 -b "$TMP/collectionadmin.jar" "$BASE/demo/settings"

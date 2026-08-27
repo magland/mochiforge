@@ -1,7 +1,7 @@
 import express, { Express, Request, Response } from 'express';
 import * as fs from 'fs';
 import { CiEngine } from './ci/engine';
-import { loadConfig, saveConfig } from './config';
+import { isPlausibleHostname, loadConfig, saveConfig } from './config';
 import { Egress } from './egress';
 import { isValidNewRepoPath, isValidRefName, isValidRepoPath, isValidSha } from './git';
 import { firePush } from './ci/trigger';
@@ -27,6 +27,7 @@ import {
   siteDir,
 } from './scan';
 import { clearRepoDomain, repoDomain, setRepoDomain } from './domains';
+import { normalizeHostname } from './siteshost';
 import { editSiteSettings, isUsableSiteLabel, siteLabelConflict, siteSettings } from './sitesettings';
 import {
   Viewer,
@@ -919,6 +920,221 @@ export function registerWebOps(
     }
     res.redirect(`/${encodeURIComponent(name)}`);
   });
+
+  // ---- vault settings ----
+  //
+  // Registered ahead of the collection settings below, because the
+  // /:collection/settings pattern would otherwise swallow /admin/settings:
+  // 'admin' is a reserved name, so it can never be a collection, but the
+  // parameter route cannot know that and answers first in registration
+  // order. The helpers this block calls are declared in the administration
+  // section further down, which function hoisting makes reachable.
+  //
+  // The rest of config.json, administered from the browser: the sites
+  // hostname, CI retention, and the startup-read network and limits blocks.
+  // The JSON API refuses to write the startup-read ones, because an API caller
+  // reads the response as the new state of the server. A page can say more
+  // than a status code, so here they are editable, and the page names each
+  // saved value the running server is not yet using, with the command that
+  // restarts it.
+
+  // What the running server actually read: registration happens once, at
+  // startup, alongside server.ts reading the same file for its limiters, so
+  // this snapshot is the values the process is living by.
+  const startupConfig = loadConfig(root);
+
+  /**
+   * How this server is restarted, for the page's restart notes. The
+   * environment says which deployment this is: a Fly machine carries its app
+   * name, which names the exact command; a container carries /.dockerenv,
+   * which says only that it is one, so the command is the documented compose
+   * deployment's and is offered with that said. Null means nothing identifies
+   * a deployment, and the page says to start it again however it was started,
+   * which is the honest answer rather than a guess at somebody's unit file.
+   */
+  function restartHow(): { command: string; caveat: string } | null {
+    const flyApp = process.env.FLY_APP_NAME;
+    if (flyApp) return { command: `fly apps restart ${flyApp}`, caveat: '' };
+    if (fs.existsSync('/.dockerenv')) {
+      return {
+        command: 'docker compose restart mochi',
+        caveat: 'if this is the compose deployment; otherwise restart the container however it was started',
+      };
+    }
+    return null;
+  }
+
+  /** Back to the box the form was posted from, carrying its confirmation; see settingsBack above. */
+  function vaultSettingsBack(section: forms.VaultSettingsSection, msg: string): string {
+    return `/admin/settings?msg=${encodeURIComponent(msg)}&in=${section}#${section}`;
+  }
+
+  const VAULT_WIDE = 'Vault settings are vault-wide, so they take a site admin.';
+
+  app.get('/admin/settings', (req, res) => {
+    const viewer = requireAdminPage(req, res);
+    if (!viewer) return;
+    if (!canSetVaultWide(viewer)) {
+      fail(res, 403, VAULT_WIDE, viewer, '/admin');
+      return;
+    }
+    const msg = typeof req.query.msg === 'string' ? req.query.msg : undefined;
+    const inBox = typeof req.query.in === 'string' ? req.query.in : '';
+    const config = loadConfig(root);
+    res.type('html').send(
+      forms.vaultSettingsPage(
+        viewer,
+        {
+          sitesHost: config.sites.host,
+          ci: config.ci,
+          trustProxy: config.network.trustProxy,
+          limits: config.limits,
+          startup: { trustProxy: startupConfig.network.trustProxy, limits: startupConfig.limits },
+          restart: restartHow(),
+        },
+        msg,
+        forms.isVaultSettingsSection(inBox) ? inBox : undefined
+      )
+    );
+  });
+
+  /** A whole number from a form field, at least min, or null when it is not one. */
+  function intField(req: Request, name: string, min: number): number | null {
+    const raw = field(req, name).trim();
+    if (!/^\d{1,9}$/.test(raw)) return null;
+    const n = parseInt(raw, 10);
+    return n >= min ? n : null;
+  }
+
+  function requireVaultAdminPost(req: Request, res: Response): Viewer | null {
+    const viewer = requireAdminPost(req, res);
+    if (!viewer) return null;
+    if (!canSetVaultWide(viewer)) {
+      fail(res, 403, VAULT_WIDE, viewer, '/admin');
+      return null;
+    }
+    return viewer;
+  }
+
+  app.post('/admin/settings/sites', form, (req, res) => {
+    const viewer = requireVaultAdminPost(req, res);
+    if (!viewer) return;
+    const host = normalizeHostname(field(req, 'host'));
+    // loadConfig ignores a value that is not a hostname and uses the default,
+    // which is right for a hand-edited file and wrong here: refuse the typo
+    // with a message, as the API does, rather than store it silently inert.
+    if (host !== '' && !isPlausibleHostname(host)) {
+      fail(
+        res,
+        400,
+        `${field(req, 'host').trim()} is not a hostname: give at least two labels of letters, digits, and interior hyphens, with no scheme, port, or path.`,
+        viewer,
+        '/admin/settings'
+      );
+      return;
+    }
+    saveConfig(root, { sites: { host } });
+    const msg = host
+      ? `Sites are served from their own hostnames under ${host}, from the next request on.`
+      : 'Sites are served on the forge host, sandboxed, from the next request on.';
+    res.redirect(vaultSettingsBack('sites', msg));
+  });
+
+  app.post('/admin/settings/ci', form, (req, res) => {
+    const viewer = requireVaultAdminPost(req, res);
+    if (!viewer) return;
+    const runs = intField(req, 'runs', 0);
+    const days = intField(req, 'days', 0);
+    const artifactMb = intField(req, 'artifactMb', 1);
+    if (runs === null || days === null || artifactMb === null) {
+      fail(
+        res,
+        400,
+        'Runs and days are whole numbers, 0 disabling the age limit, and the artifact size is at least 1 MB.',
+        viewer,
+        '/admin/settings'
+      );
+      return;
+    }
+    saveConfig(root, { ci: { runs, days, artifactMb } });
+    res.redirect(
+      vaultSettingsBack(
+        'ci',
+        `CI retention saved: keep ${runs} runs${days > 0 ? ` and ${days} days` : ''}, artifacts up to ${artifactMb} MB.`
+      )
+    );
+  });
+
+  app.post('/admin/settings/network', form, (req, res) => {
+    const viewer = requireVaultAdminPost(req, res);
+    if (!viewer) return;
+    const value = field(req, 'trustProxy');
+    if (value !== 'true' && value !== 'false') {
+      fail(res, 400, 'Say whether the forwarded headers are believed or not.', viewer, '/admin/settings');
+      return;
+    }
+    const trustProxy = value === 'true';
+    saveConfig(root, { network: { trustProxy } });
+    res.redirect(
+      vaultSettingsBack(
+        'network',
+        trustProxy === startupConfig.network.trustProxy
+          ? `Saved: forwarded headers ${trustProxy ? 'believed' : 'not believed'}, which is what the running server started with.`
+          : 'Saved to config.json; the running server keeps its startup value until it restarts.'
+      )
+    );
+  });
+
+  app.post('/admin/settings/limits', form, (req, res) => {
+    const viewer = requireVaultAdminPost(req, res);
+    if (!viewer) return;
+    const requestsPerMinute = intField(req, 'requestsPerMinute', 0);
+    const authFailures = intField(req, 'authFailures', 0);
+    const clone = intField(req, 'clone', 1);
+    const push = intField(req, 'push', 1);
+    const search = intField(req, 'search', 1);
+    const tree = intField(req, 'tree', 1);
+    if (
+      requestsPerMinute === null ||
+      authFailures === null ||
+      clone === null ||
+      push === null ||
+      search === null ||
+      tree === null
+    ) {
+      fail(
+        res,
+        400,
+        'Limits are whole numbers: 0 disables a rate limit, and each concurrency is at least 1.',
+        viewer,
+        '/admin/settings'
+      );
+      return;
+    }
+    // The whole block is written back, since saveConfig replaces a top-level
+    // key rather than merging into it; the egress cap keeps the value it has,
+    // because its lever is the Egress page.
+    saveConfig(root, {
+      limits: { ...loadConfig(root).limits, requestsPerMinute, authFailures, clone, push, search, tree },
+    });
+    const s = startupConfig.limits;
+    const applied =
+      requestsPerMinute === s.requestsPerMinute &&
+      authFailures === s.authFailures &&
+      clone === s.clone &&
+      push === s.push &&
+      search === s.search &&
+      tree === s.tree;
+    res.redirect(
+      vaultSettingsBack(
+        'limits',
+        applied
+          ? 'Limits saved, matching what the running server started with.'
+          : 'Limits saved to config.json; values the running server read at startup keep applying until it restarts.'
+      )
+    );
+  });
+
 
   // ---- a collection's own settings ----
   //

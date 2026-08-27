@@ -756,6 +756,9 @@ textarea {
 /* News, of either kind: the tint, and a rule down the side it is read from. */
 .flash { background: var(--ok-bg); border-left: 3px solid var(--ok-border); padding: 8px 12px; margin-bottom: 16px; max-width: 620px; }
 .form-error { background: var(--err-bg); border-left: 3px solid var(--err-border); padding: 8px 12px; margin-bottom: 16px; max-width: 620px; }
+/* The amber grade of news: a saved setting the running server has not read
+   yet, waiting for a restart. Not an error, so it takes the surface tint. */
+.restart-note { background: var(--surface); border-left: 3px solid var(--alert-warning); padding: 8px 12px; margin-bottom: 16px; max-width: 620px; }
 /* A section flagged by the colour of the news it carries, as the flashes and
    the merge box are. Two grades, because they are not the same warning: amber
    for what disrupts other people and can be put back, red for what is gone.

@@ -1196,7 +1196,7 @@ ${danger}
  */
 export function adminShell(
   viewer: Viewer,
-  active: 'index' | 'users' | 'runners' | 'appearance' | 'egress' | 'github',
+  active: 'index' | 'users' | 'runners' | 'appearance' | 'egress' | 'github' | 'settings',
   title: string,
   path: string,
   body: Html
@@ -1214,6 +1214,7 @@ ${item('runners', '/admin/runners', 'Runners', 'server')}
 ${canVault ? item('github', '/admin/github', 'GitHub sign-in', 'person') : ''}
 ${canVault ? item('egress', '/admin/egress', 'Egress', 'upload') : ''}
 ${canVault ? item('appearance', '/admin/appearance', 'Appearance', 'appearance') : ''}
+${canVault ? item('settings', '/admin/settings', 'Vault settings', 'sliders') : ''}
 </div></div></aside>`;
   // The bar locates an admin page the way it locates a repository page: the
   // trail up from here, for after the heading has scrolled away.
@@ -1224,6 +1225,7 @@ ${canVault ? item('appearance', '/admin/appearance', 'Appearance', 'appearance')
     github: { href: '/admin/github', label: 'GitHub sign-in' },
     egress: { href: '/admin/egress', label: 'Egress' },
     appearance: { href: '/admin/appearance', label: 'Appearance' },
+    settings: { href: '/admin/settings', label: 'Vault settings' },
   };
   const section = sections[active];
   const crumbs = html` / <a href="/admin">admin</a>${
@@ -1258,11 +1260,16 @@ ${
     ? card('/admin/appearance', 'Appearance', 'Choose the theme this vault is served with.')
     : ''
 }
+${
+  canVault
+    ? card('/admin/settings', 'Vault settings', 'The sites hostname, CI retention, forwarded headers, and rate limits.')
+    : ''
+}
 </div>
 ${
   canVault
     ? ''
-    : html`<p class="muted small">Appearance and the egress budget are vault-wide settings, so they are the site admin's.</p>`
+    : html`<p class="muted small">Appearance, the egress budget, and the vault settings are vault-wide, so they are the site admin's.</p>`
 }`;
   return adminShell(viewer, 'index', 'Administration', '/admin', content);
 }
@@ -1413,6 +1420,193 @@ ${csrfField(viewer)}
 <button type="submit" class="btn btn-primary">${icon('check')}<span>Save theme</span></button>
 </form>`;
   return adminShell(viewer, 'appearance', 'Appearance', '/admin/appearance', content);
+}
+
+/** What the vault settings page shows; gathered by the route from config.json. */
+export interface VaultSettingsInfo {
+  /** The vault's sites host, '' when sites are served sandboxed on the forge host. */
+  sitesHost: string;
+  ci: { runs: number; days: number; artifactMb: number };
+  trustProxy: boolean;
+  limits: {
+    requestsPerMinute: number;
+    authFailures: number;
+    clone: number;
+    push: number;
+    search: number;
+    tree: number;
+  };
+  /**
+   * What the running server read at startup, for the settings read only then,
+   * so the page can say which saved values are not yet in effect.
+   */
+  startup: { trustProxy: boolean; limits: VaultSettingsInfo['limits'] };
+  /**
+   * How this server is restarted, where the environment says which deployment
+   * it is; null when nothing identifies one, and the reader is told to start
+   * it again however they started it. `caveat` is for a guess that holds for
+   * the documented deployment and not for every one of its shape.
+   */
+  restart: { command: string; caveat: string } | null;
+}
+
+/**
+ * The boxes of the vault settings page, as the ids their forms post back to,
+ * on the same terms as the repository settings page: each save redirects to
+ * its own box with `?in=` naming it, so the reader stays where the form was
+ * and the confirmation is rendered inside that box.
+ */
+export type VaultSettingsSection = 'sites' | 'ci' | 'network' | 'limits';
+
+export function isVaultSettingsSection(value: string): value is VaultSettingsSection {
+  return value === 'sites' || value === 'ci' || value === 'network' || value === 'limits';
+}
+
+/**
+ * The rest of config.json, administered: the sites hostname, CI retention,
+ * and the startup-read network and limits blocks. The first two are read per
+ * request, so a save is in effect on the next one. The last two are read once
+ * at startup; a save still writes config.json, and the box carries an amber
+ * note naming each saved value the running server is not yet using, with the
+ * command that restarts it, so the state of the world is never misreported.
+ */
+export function vaultSettingsPage(
+  viewer: Viewer,
+  info: VaultSettingsInfo,
+  msg?: string,
+  section?: VaultSettingsSection
+): string {
+  // A message belongs to the box whose form produced it; one that names no box
+  // (a hand-typed URL, an older link) stays at the top.
+  const flashIn = (name: VaultSettingsSection) => (section === name ? flashBanner(msg) : '');
+  const restartHow = info.restart
+    ? html`restart the server: <span class="mono">${info.restart.command}</span>${
+        info.restart.caveat ? html` (${info.restart.caveat})` : ''
+      }`
+    : html`stop the server and start it again the way it was started`;
+  const pendingNote = (rows: { name: string; running: string; saved: string }[]) =>
+    rows.length
+      ? html`<div class="restart-note">Saved, but not yet in effect: the running server started with ${joinHtml(
+          rows.map((r) => html`<span class="mono">${r.name}</span> ${r.running} (saved: ${r.saved})`),
+          ', '
+        )}. To apply, ${restartHow}.</div>`
+      : '';
+  const num = (id: string, label: string, value: number, min: number, blurb: Html | string) =>
+    html`<div class="field"><label for="${id}">${label}</label><input type="number" id="${id}" name="${id}" min="${String(
+      min
+    )}" step="1" value="${String(value)}">${blurb === '' ? '' : html`<p class="muted small">${blurb}</p>`}</div>`;
+
+  const sitesBox = html`<div class="box settings-box" id="sites"><div class="box-header">${icon(
+    'globe'
+  )}Sites hostname</div><div class="box-body">
+${flashIn('sites')}
+<p>${
+    info.sitesHost
+      ? html`Sites are served from their own origins under <span class="mono">${info.sitesHost}</span>.`
+      : html`No sites host is set, so sites are served on the forge host, sandboxed.`
+  }</p>
+<form method="post" action="/admin/settings/sites">
+${csrfField(viewer)}
+<div class="field"><label for="sitesHost">Sites host</label><input type="text" id="sitesHost" name="host" value="${
+    info.sitesHost
+  }" placeholder="vault-sites.example.org" autocomplete="off" spellcheck="false">
+<p class="muted small">Subdomains of this hostname serve each eligible repository's site, at <span class="mono">&lt;repo&gt;--&lt;collection&gt;.&lt;host&gt;</span> or the label the repository chose, in place of the sandbox on the forge host. Set it only once the wildcard resolves to this vault and a certificate covers it, since sites stop being served anywhere else the moment it is saved. It is read per request, so a save is in effect immediately; empty puts sites back on the forge host, equally immediately.</p></div>
+<button type="submit" class="btn btn-primary">${icon('check')}<span>Save</span></button>
+</form>
+</div></div>`;
+
+  const ciBox = html`<div class="box settings-box" id="ci"><div class="box-header">${icon(
+    'workflow'
+  )}CI retention</div><div class="box-body">
+${flashIn('ci')}
+<form method="post" action="/admin/settings/ci">
+${csrfField(viewer)}
+${num(
+    'runs',
+    'Completed runs to keep',
+    info.ci.runs,
+    0,
+    'Per repository; older completed runs beyond this are dropped, with their logs and artifacts.'
+  )}
+${num('days', 'Days to keep them', info.ci.days, 0, 'Also drop completed runs older than this many days; 0 keeps them regardless of age.')}
+${num('artifactMb', 'Largest artifact (MB)', info.ci.artifactMb, 1, 'The largest artifact a workflow job may upload.')}
+<p class="muted small">Read per request, so a change is in effect on the next one.</p>
+<button type="submit" class="btn btn-primary">${icon('check')}<span>Save</span></button>
+</form>
+</div></div>`;
+
+  const networkBox = html`<div class="box settings-box" id="network"><div class="box-header">${icon(
+    'link'
+  )}Network</div><div class="box-body">
+${flashIn('network')}
+${pendingNote(
+    info.trustProxy !== info.startup.trustProxy
+      ? [
+          {
+            name: 'trustProxy',
+            running: info.startup.trustProxy ? 'believed' : 'not believed',
+            saved: info.trustProxy ? 'believed' : 'not believed',
+          },
+        ]
+      : []
+  )}
+<form method="post" action="/admin/settings/network">
+${csrfField(viewer)}
+<div class="field"><label for="trustProxy">Forwarded headers</label><select id="trustProxy" name="trustProxy">
+<option value="true"${info.trustProxy ? raw(' selected') : ''}>Believed: a reverse proxy is the only way in</option>
+<option value="false"${info.trustProxy ? '' : raw(' selected')}>Not believed: the vault is exposed directly</option>
+</select>
+<p class="muted small">Whether <span class="mono">X-Forwarded-For</span> and <span class="mono">X-Forwarded-Proto</span> may be believed. Believe them only when a reverse proxy you control is the only way in: on a directly exposed vault they let any client claim any address, which defeats every per-address limit. Read once at startup, so a save here writes <span class="mono">config.json</span> and waits for a restart.</p></div>
+<button type="submit" class="btn btn-primary">${icon('check')}<span>Save</span></button>
+</form>
+</div></div>`;
+
+  const limitFields: { key: keyof VaultSettingsInfo['limits']; label: string; min: number; blurb: string }[] = [
+    {
+      key: 'requestsPerMinute',
+      label: 'Requests per minute',
+      min: 0,
+      blurb: 'Per address, over everything not exempt; 0 turns the ceiling off.',
+    },
+    {
+      key: 'authFailures',
+      label: 'Auth failures',
+      min: 0,
+      blurb: 'Failed credential checks per address and username, in 15 minutes; 0 turns the limit off.',
+    },
+    { key: 'clone', label: 'Concurrent clones', min: 1, blurb: '' },
+    { key: 'push', label: 'Concurrent pushes', min: 1, blurb: '' },
+    { key: 'search', label: 'Concurrent searches', min: 1, blurb: '' },
+    { key: 'tree', label: 'Concurrent tree reads', min: 1, blurb: '' },
+  ];
+  const limitsBox = html`<div class="box settings-box" id="limits"><div class="box-header">${icon(
+    'filter'
+  )}Limits</div><div class="box-body">
+${flashIn('limits')}
+${pendingNote(
+    limitFields
+      .filter((f) => info.limits[f.key] !== info.startup.limits[f.key])
+      .map((f) => ({ name: f.key, running: String(info.startup.limits[f.key]), saved: String(info.limits[f.key]) }))
+  )}
+<form method="post" action="/admin/settings/limits">
+${csrfField(viewer)}
+${joinHtml(
+    limitFields.map((f) => num(f.key, f.label, info.limits[f.key], f.min, f.blurb)),
+    '\n'
+  )}
+<p class="muted small">The four concurrencies are how many git subprocesses of each class may run at once; requests beyond them queue briefly. All of this box is read once at startup, since it holds live counters, so a save writes <span class="mono">config.json</span> and waits for a restart. The daily egress cap is the one limit not here: it is read per request, and lives on the <a href="/admin/egress">Egress</a> page.</p>
+<button type="submit" class="btn btn-primary">${icon('check')}<span>Save</span></button>
+</form>
+</div></div>`;
+
+  const content = html`<div class="page-head"><h1>Vault settings</h1></div>
+${section === undefined ? flashBanner(msg) : ''}
+<p class="muted">The rest of what <span class="mono">config.json</span> holds, next to <span class="mono">vault.json</span>: every box writes that file, which can equally be edited by hand. The theme is under <a href="/admin/appearance">Appearance</a>, the daily egress cap under <a href="/admin/egress">Egress</a>, and sign-in with GitHub has a <a href="/admin/github">page of its own</a>.</p>
+${sitesBox}
+${ciBox}
+${networkBox}
+${limitsBox}`;
+  return adminShell(viewer, 'settings', 'Vault settings', '/admin/settings', content);
 }
 
 /**
