@@ -107,6 +107,8 @@ POST   /api/repos/:c/:r/fork                       fork     {collection, name?}
 POST   /api/repos/:c/:r/rename                     rename   {name?, collection?}          (admin;
                                                    a move also takes create in the destination)
 DELETE /api/repos/:c/:r                            delete   (requires ?confirm=<c>/<r>)   (admin)
+POST   /api/repos/:c/:r/gc                         drop unreachable objects              (admin;
+                                                   requires ?confirm=<c>/<r>)
 GET    /api/repos/:c/:r/collaborators              collaborators, owners, and visibility  (admin)
 PUT    /api/repos/:c/:r/collaborators/:user        give a role   {role: read|write|admin} (admin)
 DELETE /api/repos/:c/:r/collaborators/:user        remove one                             (admin)

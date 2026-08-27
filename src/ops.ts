@@ -741,6 +741,75 @@ export async function createBranch(repoDir: string, name: string, fromRef: strin
   }
 }
 
+/**
+ * What the object store holds, as `git count-objects` reports it: loose objects
+ * and packed ones together, with their size in kilobytes.
+ */
+export interface ObjectStats {
+  objects: number;
+  kilobytes: number;
+}
+
+async function objectStats(repoDir: string): Promise<ObjectStats> {
+  const out = (await execGit(repoDir, ['count-objects', '-v'])).toString('utf8');
+  const field = (name: string): number => {
+    const line = out.split('\n').find((l) => l.startsWith(`${name}: `));
+    const value = line ? Number(line.slice(name.length + 2).trim()) : 0;
+    return Number.isFinite(value) ? value : 0;
+  };
+  return {
+    objects: field('count') + field('in-pack'),
+    kilobytes: field('size') + field('size-pack'),
+  };
+}
+
+/**
+ * How recent an unreachable object has to be to survive an on-demand
+ * collection.
+ *
+ * Not `now`, deliberately. A push uploads its objects before it moves the
+ * branch that will make them reachable, so during those seconds its objects are
+ * unreachable in exactly the way abandoned ones are, and a collection sparing
+ * nothing could delete a push in flight. Five minutes is far longer than that
+ * window and short enough that anything a person is asking to be rid of, which
+ * is by definition something already pushed and then rewritten away, is gone.
+ * The periodic sweep in src/maintenance.ts is far more generous, because it runs
+ * unattended and nobody is watching it.
+ */
+const ON_DEMAND_PRUNE = '5.minutes.ago';
+
+/** A collection this slow is one the caller should not be waiting on. */
+const GC_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Collect one repository now: drop every object no ref can reach, and repack
+ * what is left.
+ *
+ * This is the answer to "I pushed something I should not have, rewrote it out of
+ * the history, and want it gone", which the periodic sweep cannot be: that one
+ * spares anything unreachable but recent, so it does not promise promptness.
+ * Reflogs are expired first, since a vault configured to keep them would
+ * otherwise hold a reference to exactly the commits being disowned.
+ */
+export async function collectRepo(repoDir: string): Promise<{ before: ObjectStats; after: ObjectStats }> {
+  const before = await objectStats(repoDir);
+  await execGit(repoDir, ['reflog', 'expire', '--expire=now', '--expire-unreachable=now', '--all']).catch(
+    () => undefined
+  );
+  try {
+    await execGit(repoDir, ['gc', '--quiet', `--prune=${ON_DEMAND_PRUNE}`], { timeoutMs: GC_TIMEOUT_MS });
+  } catch (e) {
+    // The commonest failure is another gc holding the repository's gc.pid lock,
+    // which is a conflict rather than a fault: the work is already happening.
+    const message = e instanceof Error ? e.message : String(e);
+    if (/gc is already running|gc\.pid/i.test(message)) {
+      throw new OpError('a collection is already running on this repository', 'conflict');
+    }
+    throw new OpError(`could not collect the repository: ${message}`);
+  }
+  return { before, after: await objectStats(repoDir) };
+}
+
 export async function deleteBranch(repoDir: string, name: string): Promise<void> {
   if (!isValidRefName(name) || name.startsWith('-')) throw new OpError('invalid branch name');
   // update-ref -d bypasses receive.denyDeletes, deliberately: the receive

@@ -11,6 +11,7 @@ import {
   NewBranchError,
   OpError,
   UploadedFile,
+  collectRepo,
   commitFiles,
   createBranch,
   createRepoWithReadme,
@@ -519,6 +520,34 @@ export function registerWriteApi(
       res.json({ collection, name, renamed: true });
     } catch (e) {
       sendOpError(res, e, 'could not rename the repository');
+    }
+  });
+
+  // Collecting a repository now, rather than waiting for the sweep in
+  // src/maintenance.ts to reach it. It takes the admin role and the same typed
+  // confirmation deletion takes, because what it removes is unrecoverable:
+  // everything no ref can reach, which is exactly what a person who has just
+  // rewritten a history away is asking for, and exactly what someone who
+  // mistook this for a repack is not.
+  app.post('/api/repos/:collection/:repo/gc', async (req, res) => {
+    const ctx = requireRepoAdmin(root, limiter, req, res);
+    if (!ctx) return;
+    const full = `${ctx.repo.collection}/${ctx.repo.name}`;
+    if (String(req.query.confirm ?? '') !== full) {
+      apiError(res, 400, `to drop every unreachable object in this repository, send ?confirm=${full}`);
+      return;
+    }
+    try {
+      const { before, after } = await collectRepo(ctx.repo.dir);
+      res.json({
+        repo: full,
+        before,
+        after,
+        removed: Math.max(0, before.objects - after.objects),
+        kilobytesFreed: Math.max(0, before.kilobytes - after.kilobytes),
+      });
+    } catch (e) {
+      sendOpError(res, e, 'could not collect the repository');
     }
   });
 

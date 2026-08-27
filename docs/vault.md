@@ -135,6 +135,8 @@ Git adds objects and never removes them. A force push, a deleted branch, or a re
 
 The vault therefore sweeps for itself. Every six hours it collects each repository that has changed since it was last collected, one at a time, recording each pass in a `mochi-last-gc` file in the repository directory. Objects unreachable but newer than two days are kept, which is what makes the sweep safe to run beside live traffic: a push uploads its objects before it moves the branch that makes them reachable, so for a moment those objects look exactly like abandoned ones, and a collection that spared nothing could delete a push in flight.
 
+`mochi repo gc <repo> --yes` collects one repository immediately, sparing only the last five minutes rather than the last two days. That is the command to reach for after rewriting a file out of a history: it takes the admin role on the repository, and what it removes cannot be recovered.
+
 The consequence worth knowing is that removal is not immediate. A file pushed by mistake and then rewritten out of the history is unreachable at once, so it is gone from every branch, tag, clone, and listing; but until a sweep passes over it, it can still be fetched by naming its commit directly. Rotate a secret that was pushed rather than counting on the sweep to contain it.
 
 ## Renaming a repository or a collection

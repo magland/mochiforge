@@ -2544,6 +2544,9 @@ git init -q "$TMP/forcesrc"
 ) > /dev/null 2>&1
 FORCE_URL="http://owner:$OWNER_TOKEN@127.0.0.1:$PORT/apis/forced"
 run_ok "a repository to force push at" git -C "$TMP/forcesrc" push -q "$FORCE_URL" main
+# The tip the force push is about to disown, recorded while it is still the one
+# the vault has.
+ABANDONED="$(git -C "$TMP/forcesrc" rev-parse HEAD)"
 git -C "$TMP/forcesrc" reset -q --hard HEAD~1
 git -C "$TMP/forcesrc" commit -q --allow-empty -m "rewritten"
 REWRITTEN="$(git -C "$TMP/forcesrc" rev-parse HEAD)"
@@ -2553,6 +2556,26 @@ body_has "shows the rewritten commit at the tip" "\"sha\":\"$REWRITTEN\""
 run_fails "deleting a branch by push is still refused" git -C "$TMP/forcesrc" push -q "$FORCE_URL" :main
 api "so the branch is still there" 200 "$BASE/api/repos/apis/forced/branches"
 body_has "at the commit the force push left" "\"sha\":\"$REWRITTEN\""
+
+# ---- collecting what the force push abandoned ----
+#
+# The commit the force push left behind is unreachable at once, and still
+# readable by hash until something collects it. The periodic sweep spares
+# anything unreachable but recent, and so does this command, by five minutes; to
+# check that it removes rather than merely repacks, the object store is aged past
+# that first.
+FORCED_GIT="$VAULT/collections/apis/repos/forced.git"
+run_ok "the abandoned commit is still readable by hash" git -C "$FORCED_GIT" cat-file -e "$ABANDONED"
+run_code "repo gc refuses without --yes" 2 cli repo gc apis/forced
+err_has "and says what to pass" -- '--yes'
+find "$FORCED_GIT/objects" -exec touch -d '1 hour ago' {} + 2>/dev/null
+run_ok "repo gc with --yes" cli repo gc apis/forced --yes
+body_has "reporting what it dropped" 'Collected apis/forced'
+run_fails "the abandoned commit is gone" git -C "$FORCED_GIT" cat-file -e "$ABANDONED"
+api "and the branch it left is untouched" 200 "$BASE/api/repos/apis/forced/branches"
+body_has "still at the rewritten commit" "\"sha\":\"$REWRITTEN\""
+run_ok "collecting again finds nothing left to drop" cli repo gc apis/forced --yes
+body_has "and says so" 'nothing was unreachable'
 
 # ---- mochi import and collections, from the CLI ----
 

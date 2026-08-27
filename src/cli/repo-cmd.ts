@@ -288,6 +288,46 @@ together.`,
     },
   },
   {
+    path: ['repo', 'gc'],
+    summary: 'Drop every object no branch or tag can reach',
+    description: `Git adds objects and never removes them, so a force push, a deleted branch, or a
+rewritten history leaves what it abandoned in the repository: unreachable from
+any ref, still readable by anyone who knows the hash, and still counted against
+the disk. This drops all of it now.
+
+The vault collects each repository on its own every few hours, sparing anything
+unreachable but newer than two days so that a push in flight is never pruned.
+This command is for when that is not soon enough: a file rewritten out of a
+history is unreachable at once, but until it is collected it can still be
+fetched by naming its commit. Objects younger than five minutes are still
+spared, which is the same in-flight push the sweep protects.
+
+Takes the admin role on the repository. What it removes cannot be recovered.`,
+    args: [{ name: 'repo' }],
+    options: [YES_OPTION, JSON_OPTION, ...TARGET_OPTIONS],
+    async run(inv) {
+      requireYes(inv, 'Dropping unreachable objects');
+      const target = await targetFrom(inv);
+      const repo = await resolveRepo(inv, target, inv.args[0]);
+      const full = `${repo.collection}/${repo.repo}`;
+      const data = await api(target, 'POST', `${repoPath(repo)}/gc?confirm=${encodeURIComponent(full)}`);
+      const json = jsonMode(inv);
+      if (json.enabled) {
+        printJson(pickObject(data, json.fields));
+        return;
+      }
+      const removed = Number(data.removed ?? 0);
+      const freed = Number(data.kilobytesFreed ?? 0);
+      console.log(
+        removed === 0
+          ? `Collected ${full}; nothing was unreachable.`
+          : `Collected ${full}: ${removed} object${removed === 1 ? '' : 's'} dropped, ${
+              freed >= 1024 ? `${(freed / 1024).toFixed(1)} MB` : `${freed} KB`
+            } freed.`
+      );
+    },
+  },
+  {
     path: ['repo', 'clone'],
     summary: 'git clone, with the vault URL filled in',
     description: `A thin wrapper over git clone. The URL is otherwise assembled by hand from the

@@ -119,6 +119,7 @@ mochi repo edit --upstream https://github.com/owner/repo   # record what mochi s
 mochi repo fork demo/proj myfork
 mochi repo rename demo/proj newname --collection othercollection
 mochi repo delete demo/old --yes
+mochi repo gc demo/proj --yes             # drop every object no ref can reach
 mochi repo clone demo/proj
 
 mochi branch create topic              # from the default branch, or from a named one
@@ -296,6 +297,8 @@ git push http://127.0.0.1:3000/mycollection/myrepo main
 ```
 
 Pushing to a repository that does not exist yet creates it, provided you may create there: your own collection, one you own, or anywhere for a site admin. The collection directory is created as needed, and after the first push HEAD points at the pushed branch. Repositories created this way are public (a push has no way to carry the private flag; flip it in the settings or with `mochi repo edit --private` afterwards) and get `receive.denyDeletes` and a `receive.maxInputSize` limit of 2 GiB. Anonymous fetch stays open on public repositories; a private one asks for the same credentials a push does and serves only readers. The username in the Basic pair may be anything when the password is a valid token: a token identifies its owner by itself, as on GitHub.
+
+`mochi repo gc` drops every object no branch or tag can reach, now. Git adds objects and never removes them, so a force push, a deleted branch, or a history rewritten with `git filter-repo` leaves what it abandoned in the repository: unreachable from any ref, still readable by anyone who knows the hash, and still counted against the disk. The vault collects each repository on its own every few hours and spares anything unreachable but newer than two days, so that a push in flight is never pruned; this command is for when that is not soon enough, and it spares only the last five minutes. It takes the admin role on the repository and the same `--yes` deletion takes, since what it removes cannot be recovered. Note that a secret that reached the vault should be rotated rather than collected: it was readable for as long as it was there.
 
 ### Not typing the token every time
 
