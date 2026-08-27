@@ -2,7 +2,8 @@ import express, { Express, Request, Response } from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
 import { AuthLimiter } from '../limit';
-import { isValidName } from '../scan';
+import { findRepo, isValidName } from '../scan';
+import { siteSettings } from '../sitesettings';
 import { siteHostUrl } from '../site';
 import { canAdminRunnerGlobs, isSiteAdmin } from '../perms';
 import { AuthResult, authenticateToken, loadVault } from '../vault';
@@ -829,6 +830,20 @@ export function registerCiApi(app: Express, root: string, engine: CiEngine, auth
     }
     if (!engine.heartbeat(a.collection, a.repo, a.run, a.job, leaseOf(req), auth.name)) {
       apiError(res, 409, 'the lease on this job is no longer valid');
+      return;
+    }
+    // The repository's own settings gate the write, not the runner's standing:
+    // a site that is not enabled is not deployed to, and one published by
+    // copying files is not deployed to either, so a workflow cannot overwrite
+    // what somebody maintains by hand. The refusal names the setting to change.
+    const repo = findRepo(root, a.collection, a.repo);
+    const settings = repo ? siteSettings(repo.dir) : null;
+    if (!settings || !settings.enabled) {
+      apiError(res, 403, `the site for ${a.collection}/${a.repo} is not enabled; a repository admin can enable it in the repository's settings`);
+      return;
+    }
+    if (settings.source !== 'actions') {
+      apiError(res, 403, `the site for ${a.collection}/${a.repo} is published by copying files, not by workflow deploys; set its site source to workflow deploys first`);
       return;
     }
     const body = (req.body ?? {}) as Record<string, unknown>;

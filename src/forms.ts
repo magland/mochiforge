@@ -7,6 +7,7 @@ import { markdownEditor, previewUrl } from './mdedit';
 import { MARK } from './logo';
 import { formatSize, timeTag } from './render';
 import { Viewer } from './session';
+import { siteHostFor } from './siteshost';
 import { Theme } from './themes';
 import { isSiteAdmin } from './perms';
 import { GithubAccount, UserProfile, UserRecord, passkeyBinding, tokenId } from './vault';
@@ -736,11 +737,26 @@ export function conflictPage(ctx: RepoCtx, branch: string, retryUrl: string): st
   return layout(`Conflict - ${ctx.collection}/${ctx.repo}`, body, repoOpts(ctx));
 }
 
+/** What the settings page's Site box shows; gathered by the route. */
+export interface SettingsSiteInfo {
+  enabled: boolean;
+  source: 'copy' | 'actions';
+  /** The custom label on the sites host, '' for the derived one. */
+  label: string;
+  /** The custom domain a vault admin attached, or null. */
+  domain: string | null;
+  /** The vault's sites host, '' when sites are served on the forge host. */
+  sitesHost: string;
+  /** Whether the <repo>.site directory exists on disk. */
+  dirExists: boolean;
+}
+
 export function settingsPage(
   ctx: RepoCtx,
   description: string,
   topics: string[],
   access: { collaborators: { username: string; role: string }[]; owners: string[] },
+  site: SettingsSiteInfo,
   msg?: string,
   error?: string
 ): string {
@@ -819,6 +835,52 @@ ${csrfField(ctx.viewer!)}
 <p class="muted small">read may see a private repository; write may also push and edit; admin may also change its settings, visibility, and collaborators.</p>
 </div></div>`
     : '';
+  // The site: whether the sibling directory is published, how it is written,
+  // and at which hostname. Admin only, like visibility, because enabling a
+  // site publishes whatever the directory holds to everyone.
+  const derivedHost = site.sitesHost ? siteHostFor(site.sitesHost, ctx.collection, ctx.repo) : null;
+  const derivedLabel = derivedHost ? derivedHost.slice(0, -(site.sitesHost.length + 1)) : null;
+  const siteStatus = site.enabled
+    ? site.dirExists
+      ? html`This repository's site is <b>enabled</b>, served at <a href="${ctx.siteUrl}">${ctx.siteUrl}</a>.`
+      : html`This repository's site is <b>enabled</b>, but there are no site files yet: copy them into <span class="mono">${ctx.repo}.site</span> next to the repository, or have a workflow deploy them.`
+    : site.dirExists
+      ? html`This repository's site is <b>disabled</b>. The files in <span class="mono">${ctx.repo}.site</span> stay on disk but are not served; enabling the site brings them straight back.`
+      : html`This repository's site is <b>disabled</b>. Enabling it serves static files from a <span class="mono">${ctx.repo}.site</span> directory next to the repository, with an index.html at its root.`;
+  const domainNote = site.domain
+    ? html`<p>It answers at <a href="https://${site.domain}/">https://${site.domain}/</a>, its custom domain; its other hostnames redirect there.</p>`
+    : html`<p class="muted small">A vault admin can attach a custom domain with <span class="mono">mochi repo edit ${ctx.collection}/${ctx.repo} --site-domain docs.example.org</span>.</p>`;
+  const labelField = site.sitesHost
+    ? html`<div class="field"><label for="siteLabel">Hostname label</label><input type="text" id="siteLabel" name="label" value="${site.label}" placeholder="${derivedLabel ?? ''}"><p class="muted small">The label under <span class="mono">${site.sitesHost}</span> the site is served from: lowercase letters, digits, and single interior hyphens. ${
+        derivedLabel
+          ? html`Empty means the default, <span class="mono">${derivedLabel}</span>.`
+          : html`This repository's names are not usable as a hostname label, so without one the site is served on the forge host, sandboxed.`
+      }</p></div>`
+    : '';
+  const siteConfigForm = site.enabled
+    ? html`<hr class="rule">
+<form method="post" action="${base}/settings/site">
+${csrfField(ctx.viewer!)}
+<div class="field"><label for="siteSource">Published by</label><select id="siteSource" name="source">
+<option value="copy"${site.source === 'copy' ? raw(' selected') : ''}>Copied files</option>
+<option value="actions"${site.source === 'actions' ? raw(' selected') : ''}>Workflow deploys</option>
+</select><p class="muted small">Copied files means whatever can write the vault publishes by writing the directory, and a workflow's deploy step is refused. Workflow deploys additionally lets a run's <span class="mono">deploy-pages</span> step publish the site.</p></div>
+${labelField}
+<button type="submit" class="btn btn-primary">${icon('check')}<span>Save</span></button>
+</form>`
+    : '';
+  const siteBox = ctx.canAdmin
+    ? html`<div class="box settings-box"><div class="box-header">${icon('globe')}Site</div><div class="box-body">
+<p>${siteStatus}</p>
+${site.enabled ? domainNote : ''}
+<form method="post" action="${base}/settings/site">
+${csrfField(ctx.viewer!)}
+<input type="hidden" name="enabled" value="${site.enabled ? 'false' : 'true'}">
+<button type="submit" class="btn">${site.enabled ? 'Disable site' : 'Enable site'}</button>
+</form>
+${siteConfigForm}
+</div></div>`
+    : '';
   // Renaming and moving are one operation, since both are a directory rename.
   // It is flagged because every URL to this repository, and every remote
   // pointing at it, changes with it; it takes the amber grade rather than the
@@ -853,6 +915,7 @@ ${flashBanner(msg)}
 ${errorBanner(error)}
 ${settingsForm}
 ${accessBox}
+${siteBox}
 ${renameForm}
 ${dangerZone}`;
   return layout(`Settings - ${ctx.collection}/${ctx.repo}`, body, repoOpts(ctx, `${base}/settings`));

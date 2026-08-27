@@ -24,7 +24,10 @@ import {
   listRepoDirs,
   repoDescription,
   reservedRepoSuffix,
+  siteDir,
 } from './scan';
+import { repoDomain } from './domains';
+import { editSiteSettings, isUsableSiteLabel, siteLabelConflict, siteSettings } from './sitesettings';
 import {
   Viewer,
   clearSessionCookie,
@@ -1780,6 +1783,7 @@ export function registerWebOps(
       }
       const msg = typeof req.query.msg === 'string' ? req.query.msg : undefined;
       const access = repoAccess(loaded.repo.dir);
+      const settings = siteSettings(loaded.repo.dir);
       res.type('html').send(
         forms.settingsPage(
           ctx,
@@ -1788,6 +1792,14 @@ export function registerWebOps(
           {
             collaborators: Object.entries(access.collaborators).map(([username, role]) => ({ username, role })),
             owners: collectionOwners(root, loaded.repo.collection),
+          },
+          {
+            enabled: settings.enabled,
+            source: settings.source,
+            label: settings.label,
+            domain: repoDomain(root, loaded.repo.collection, loaded.repo.name),
+            sitesHost: loadConfig(root).sites.host,
+            dirExists: siteDir(root, loaded.repo.collection, loaded.repo.name) !== null,
           },
           msg
         )
@@ -1909,6 +1921,61 @@ export function registerWebOps(
       const msg = priv
         ? 'This repository is now private: visible to its collaborators, the collection’s owners, and site admins.'
         : 'This repository is now public: anyone can read it.';
+      res.redirect(`${backUrl}?msg=${encodeURIComponent(msg)}`);
+    })
+  );
+
+  // The site's switch, source, and hostname label, from the Site box on the
+  // settings page. Admin, like visibility: enabling a site publishes whatever
+  // the directory holds to everyone. Each field is applied only when the form
+  // carried it, so the enable/disable button and the source-and-label form can
+  // post to one route without clearing each other's fields. Custom domains are
+  // deliberately not here: attaching one takes a site admin, through the API
+  // or the CLI.
+  app.post(
+    '/:collection/:repo/settings/site',
+    form,
+    ah(async (req, res) => {
+      const viewer = requireViewerPost(root, req, res);
+      if (!viewer) return;
+      const loaded = await loadForRepoAdmin(req, res, viewer);
+      if (!loaded) return;
+      const backUrl = `${urlOf(loaded.repo)}/settings`;
+      const body = req.body as Record<string, unknown>;
+      const label = field(req, 'label').trim();
+      if (body.label !== undefined && label !== '') {
+        if (!isUsableSiteLabel(label)) {
+          fail(
+            res,
+            400,
+            'A site label is lowercase letters, digits, and single interior hyphens, at most 63 characters.',
+            viewer,
+            backUrl
+          );
+          return;
+        }
+        const holder = siteLabelConflict(root, label, loaded.repo.collection, loaded.repo.name);
+        if (holder) {
+          fail(res, 409, `The label ${label} is already used by ${holder}.`, viewer, backUrl);
+          return;
+        }
+      }
+      const source = field(req, 'source');
+      if (body.source !== undefined && source !== 'copy' && source !== 'actions') {
+        fail(res, 400, 'The site source must be copied files or workflow deploys.', viewer, backUrl);
+        return;
+      }
+      const settings = editSiteSettings(loaded.repo.dir, (s) => {
+        if (body.enabled !== undefined) s.enabled = field(req, 'enabled') === 'true';
+        if (body.source !== undefined) s.source = source as 'copy' | 'actions';
+        if (body.label !== undefined) s.label = label;
+      });
+      const msg =
+        body.enabled !== undefined
+          ? settings.enabled
+            ? 'The site is now enabled: the files in its site directory are served to everyone.'
+            : 'The site is now disabled: its files stay on disk but nothing is served, and workflow deploys are refused.'
+          : 'Site settings saved.';
       res.redirect(`${backUrl}?msg=${encodeURIComponent(msg)}`);
     })
   );

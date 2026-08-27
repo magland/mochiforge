@@ -57,7 +57,7 @@ no keyring and possibly no writable home directory.
 
 Vault layout, where <repos> is <vault>/collections/<collection>/repos:
   <repos>/<repo>.git                 bare repositories (the .git suffix is optional)
-  <repos>/<repo>.site                optional static site for a repo
+  <repos>/<repo>.site                static site for a repo, served once enabled in its settings
   <repos>/<repo>.lfs                 Git LFS objects, when no bucket is configured
   <repos>/<repo>.runs                workflow run history and logs
   <vault>/vault.json                 users and hashed tokens (server-managed)

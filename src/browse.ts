@@ -18,7 +18,8 @@ import { canAdminCollection, repoIsPrivate, repoRole } from './perms';
 import { displayName, findRepo, isValidName, isValidUserName, listCollections, listRepoDirs, repoDescription, siteDir } from './scan';
 import { countTopics, isValidTopic, repoTopics } from './topics';
 import { Viewer, getViewer } from './session';
-import { serveSite, siteHostUrl } from './site';
+import { siteSettings } from './sitesettings';
+import { serveSite, siteHostUrl, siteRedirectUrl } from './site';
 import { loadVault, mergeContributors, userExists } from './vault';
 import * as views from './views';
 import { encPath, repoUrl } from './views';
@@ -67,8 +68,9 @@ export function registerBrowse(app: Express, root: string, gates: Gates, lfs: Lf
         // A repository with a site is linked straight to it from the listing,
         // at its own origin where it has one, so a visitor scanning a
         // collection reaches the published page without stopping at the
-        // repository first.
-        const hasSite = siteDir(root, collection, name) !== null;
+        // repository first. Only when the site is enabled: files on disk with
+        // the switch off are not a site.
+        const hasSite = siteSettings(repo.dir).enabled && siteDir(root, collection, name) !== null;
         const origin = hasSite ? siteHostUrl(root, req, collection, name) : null;
         const run = latestRun(root, collection, name);
         return {
@@ -733,7 +735,7 @@ export function registerBrowse(app: Express, root: string, gates: Gates, lfs: Lf
   // not 301: a permanent redirect would be cached hard, and removing
   // sites.host from config.json must take effect on the next request.
   app.get('/:collection/:repo/site/*', (req, res) => {
-    const origin = siteHostUrl(root, req, req.params.collection, displayName(req.params.repo));
+    const origin = siteRedirectUrl(root, req, req.params.collection, displayName(req.params.repo));
     if (origin) {
       const query = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : '';
       res.redirect(302, `${origin}/${wildcard(req)}${query}`);
@@ -745,7 +747,7 @@ export function registerBrowse(app: Express, root: string, gates: Gates, lfs: Lf
   // The missing-slash redirect lands on the site origin in one hop rather than
   // two when there is one.
   app.get('/:collection/:repo/site', (req, res) => {
-    const origin = siteHostUrl(root, req, req.params.collection, displayName(req.params.repo));
+    const origin = siteRedirectUrl(root, req, req.params.collection, displayName(req.params.repo));
     if (origin) {
       res.redirect(302, `${origin}/`);
       return;

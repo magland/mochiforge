@@ -1,10 +1,13 @@
-import { Express } from 'express';
+import { Express, Request } from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
 import { AuthLimiter } from '../limit';
 import { repoPath } from '../layout';
 import { atLeast, repoIsPrivate, repoRole } from '../perms';
+import { repoDomain } from '../domains';
 import { displayName, forkParent, listCollections, listRepoDirs, repoDescription, siteDir, upstreamOf } from '../scan';
+import { siteSettings } from '../sitesettings';
+import { siteHostUrl } from '../site';
 import { countTopics, isValidTopic, repoTopics } from '../topics';
 import { issueCounts } from '../issues';
 import { pullCounts } from '../pulls';
@@ -39,8 +42,32 @@ function summarize(root: string, collection: string, dirName: string): RepoSumma
     topics: repoTopics(dir),
     forkedFrom: forkParent(dir),
     upstream: upstreamOf(dir)?.url ?? null,
-    hasSite: siteDir(root, collection, name) !== null,
+    // Published, not merely present: files on disk with the site disabled are
+    // not a site, here as everywhere the interface asks.
+    hasSite: siteSettings(dir).enabled && siteDir(root, collection, name) !== null,
     private: repoIsPrivate(dir),
+  };
+}
+
+/**
+ * The site block a repository's API responses carry: the settings, and the URL
+ * the site is (or would be) served at, which only the vault knows.
+ */
+function siteInfo(
+  root: string,
+  req: Request,
+  repo: { collection: string; name: string; dir: string }
+): { enabled: boolean; source: string; label: string | null; domain: string | null; url: string } {
+  const settings = siteSettings(repo.dir);
+  const origin = siteHostUrl(root, req, repo.collection, repo.name);
+  return {
+    enabled: settings.enabled,
+    source: settings.source,
+    label: settings.label === '' ? null : settings.label,
+    domain: repoDomain(root, repo.collection, repo.name),
+    url: origin
+      ? `${origin}/`
+      : `/${encodeURIComponent(repo.collection)}/${encodeURIComponent(repo.name)}/site/`,
   };
 }
 
@@ -108,6 +135,7 @@ export function registerRepoApi(app: Express, root: string, limiter: AuthLimiter
       closedIssues: issues.closed,
       openPulls: pulls.open,
       closedPulls: pulls.closed,
+      site: siteInfo(root, req, repo),
       // What this token may do here, so that a caller need not discover it by
       // being refused.
       role,
@@ -134,9 +162,13 @@ export function registerRepoApi(app: Express, root: string, limiter: AuthLimiter
   app.get('/api/repos/:collection/:repo/site', (req, res) => {
     const found = requireRepo(root, limiter, req, res);
     if (!found) return;
+    const info = siteInfo(root, req, found.repo);
     const dir = siteDir(root, found.repo.collection, found.repo.name);
+    // `exists` says whether the site is being served, which takes both the
+    // switch and the files; the settings are reported either way, and so is
+    // what is on disk, since a disabled site keeps its directory.
     if (!dir) {
-      res.json({ exists: false });
+      res.json({ ...info, exists: false });
       return;
     }
     let entries = 0;
@@ -153,7 +185,7 @@ export function registerRepoApi(app: Express, root: string, limiter: AuthLimiter
     } catch {
       // An unreadable site directory reports what it can rather than failing.
     }
-    res.json({ exists: true, entries, updated });
+    res.json({ ...info, exists: info.enabled, entries, updated });
   });
 
   // A repository name that is not two path segments is a caller's mistake rather

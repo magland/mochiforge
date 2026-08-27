@@ -29,7 +29,7 @@ import { displayName, listCollections, listRepoDirs } from './scan';
 import { repoTopics } from './topics';
 import { getViewer, renewSession } from './session';
 import { registerSiteHost } from './site';
-import { isUnderSitesHost } from './siteshost';
+import { isSiteRequest } from './domains';
 import { styleSheet } from './assets';
 import { pageScript } from './pagescript';
 import { ageScript } from './agescript';
@@ -120,7 +120,7 @@ const FORGE_CSP = [
 
 function isRateExempt(root: string, req: Request): boolean {
   if (req.path.startsWith('/api/runner/')) return true;
-  if (isUnderSitesHost(loadConfig(root).sites.host, req.hostname)) return false;
+  if (isSiteRequest(root, req.hostname)) return false;
   return req.path.startsWith('/assets/') || req.path === '/favicon.svg' || req.path === '/favicon.ico';
 }
 
@@ -239,7 +239,8 @@ export function createApp(root: string) {
   // Sites served from their own hostname are answered before every other route,
   // the asset routes included: otherwise /assets/style.css would give a site the
   // forge's stylesheet instead of its own, and /favicon.svg the forge's icon.
-  // Nothing here runs unless a sites host is configured.
+  // Nothing here runs unless a sites host is configured or a custom domain is
+  // mapped in domains.json.
   registerSiteHost(app, root);
 
   // The forge's own pages may only be framed by the forge. A CSRF token and the

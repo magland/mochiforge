@@ -32,6 +32,17 @@ function requireYes(inv: { bool(name: string): boolean }, what: string): void {
   if (!inv.bool('yes')) throw new CliError(`${what} cannot be undone. Pass --yes to go ahead.`, EXIT_USAGE);
 }
 
+// One line about the site for `repo view`: off, or where it is served, with
+// the source when it is workflow deploys, since that is the half a reader
+// cannot guess.
+function siteSummary(data: Record<string, unknown>): string {
+  const site = data.site as { enabled?: boolean; source?: string; url?: string } | undefined;
+  if (!site) return data.hasSite ? 'yes' : 'no';
+  if (!site.enabled) return 'off';
+  const source = site.source === 'actions' ? ', deployed by workflows' : '';
+  return `${site.url ?? 'on'}${source}`;
+}
+
 function refQuery(ref: string | null, extra: Record<string, string> = {}): string {
   const q = new URLSearchParams(extra);
   if (ref !== null) q.set('ref', ref);
@@ -106,7 +117,7 @@ export const repoCommands: Command[] = [
         ['releases', String(data.releases)],
         ['open issues', String(data.openIssues)],
         ['open pull requests', String(data.openPulls)],
-        ['site', data.hasSite ? 'yes' : 'no'],
+        ['site', siteSummary(data)],
       ]);
     },
   },
@@ -168,10 +179,16 @@ export const repoCommands: Command[] = [
   },
   {
     path: ['repo', 'edit'],
-    summary: 'Change a repository description, topics, default branch, or visibility',
+    summary: 'Change a repository description, topics, default branch, visibility, or site settings',
     description: `--topic replaces the whole set, which is what the API does; --add-topic and
 --remove-topic keep what is there and change it, which means reading the
-repository first. A topic is lowercase letters, digits, and hyphens.`,
+repository first. A topic is lowercase letters, digits, and hyphens.
+
+The site settings take the admin role. --enable-site serves the repository's
+<repo>.site directory; --site-source actions additionally lets a workflow's
+deploy-pages step publish it. --site-label picks the label under the vault's
+sites host ('' goes back to <repo>--<collection>), and --site-domain attaches
+a custom domain, which takes a site admin ('' detaches it).`,
     args: [{ name: 'repo' }],
     options: [
       { name: 'description', type: 'string', value: '<d>', summary: 'New description' },
@@ -183,6 +200,11 @@ repository first. A topic is lowercase letters, digits, and hyphens.`,
       { name: 'upstream', type: 'string', value: '<url>', summary: "URL this was forked from; '' clears it" },
       { name: 'private', type: 'boolean', summary: 'Make the repository private (takes the admin role)' },
       { name: 'public', type: 'boolean', summary: 'Make the repository public' },
+      { name: 'enable-site', type: 'boolean', summary: 'Serve the repository site (takes the admin role)' },
+      { name: 'disable-site', type: 'boolean', summary: 'Stop serving the site; its files stay on disk' },
+      { name: 'site-source', type: 'string', value: '<s>', summary: "How the site is published: 'copy' or 'actions'" },
+      { name: 'site-label', type: 'string', value: '<l>', summary: "Label under the sites host; '' for the default" },
+      { name: 'site-domain', type: 'string', value: '<h>', summary: "Custom domain (site admin); '' detaches it" },
       JSON_OPTION,
       ...COMMON,
     ],
@@ -194,6 +216,16 @@ repository first. A topic is lowercase letters, digits, and hyphens.`,
         throw new CliError('Pass --private or --public, not both.', EXIT_USAGE);
       }
       const priv = inv.bool('private') ? true : inv.bool('public') ? false : undefined;
+      if (inv.bool('enable-site') && inv.bool('disable-site')) {
+        throw new CliError('Pass --enable-site or --disable-site, not both.', EXIT_USAGE);
+      }
+      const siteEnabled = inv.bool('enable-site') ? true : inv.bool('disable-site') ? false : undefined;
+      const siteSource = inv.str('site-source');
+      if (siteSource !== null && siteSource !== 'copy' && siteSource !== 'actions') {
+        throw new CliError("--site-source takes 'copy' or 'actions'.", EXIT_USAGE);
+      }
+      const siteLabel = inv.str('site-label');
+      const siteDomain = inv.str('site-domain');
       const set = inv.list('topic');
       const add = inv.list('add-topic');
       const remove = inv.list('remove-topic');
@@ -210,9 +242,19 @@ repository first. A topic is lowercase letters, digits, and hyphens.`,
         const current = (await api(target, 'GET', repoPath(repo))).topics as string[] | undefined;
         topics = [...new Set([...(current ?? []), ...add])].filter((t) => !remove.includes(t));
       }
-      if (description === null && defaultBranch === null && upstream === null && topics === undefined && priv === undefined) {
+      if (
+        description === null &&
+        defaultBranch === null &&
+        upstream === null &&
+        topics === undefined &&
+        priv === undefined &&
+        siteEnabled === undefined &&
+        siteSource === null &&
+        siteLabel === null &&
+        siteDomain === null
+      ) {
         throw new CliError(
-          'Nothing to change. Pass --description, --topic, --add-topic, --remove-topic, --clear-topics, --default-branch, --upstream, --private, or --public.',
+          'Nothing to change. Pass --description, --topic, --add-topic, --remove-topic, --clear-topics, --default-branch, --upstream, --private, --public, --enable-site, --disable-site, --site-source, --site-label, or --site-domain.',
           EXIT_USAGE
         );
       }
@@ -222,6 +264,10 @@ repository first. A topic is lowercase letters, digits, and hyphens.`,
         defaultBranch: defaultBranch ?? undefined,
         upstream: upstream ?? undefined,
         private: priv,
+        siteEnabled,
+        siteSource: siteSource ?? undefined,
+        siteLabel: siteLabel ?? undefined,
+        siteDomain: siteDomain ?? undefined,
       });
       const json = jsonMode(inv);
       if (json.enabled) {

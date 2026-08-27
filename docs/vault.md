@@ -12,6 +12,7 @@ A vault is a plain directory. Its collections are in `collections/`, and a colle
   .secret                       (session-cookie signing key; created on first need)
   runners.json                  (registered workflow runners; created when you add one)
   redirects.json                (where renamed things used to be; created on the first rename)
+  domains.json                  (custom domains for sites; created when a site admin attaches one)
   collections/
     alice/
       collection.json           (the collection's explicit owners; created when one is added)
@@ -20,8 +21,9 @@ A vault is a plain directory. Its collections are in `collections/`, and a colle
         hello-numerics.git/     (bare repository)
         hello-numerics.runs/    (its workflow runs and logs)
         webapp.git/             (holds mochi.json: visibility and collaborators;
-                                 and topics: the repository's topics, one per line)
-        webapp.site/            (static site for webapp)
+                                 topics: the repository's topics, one per line;
+                                 and site.json: the site's switch, source, and label)
+        webapp.site/            (static site for webapp, served while site.json enables it)
         webapp.issues/          (its issues, one directory each)
         webapp.pulls/           (its pull requests, one directory each)
         webapp.releases/        (its release notes, one file per tag)
@@ -58,7 +60,7 @@ Authorization is GitHub-shaped: roles on repositories, owners on collections, an
   The roles order as `read` < `write` < `admin`. *read* may see a private repository; *write* may also push, edit files in the browser, and manage branches, tags, issues, and releases; *admin* may also change the repository's settings, visibility, and collaborators, rename it, and delete it. A repository with no `mochi.json` is public with no collaborators, which is what every repository was before the file existed. Collaborators are managed on the repository's settings page, with `mochi collab add`, or over the API.
 - **A site admin** (`"siteAdmin": true` on the user in `vault.json`) holds the admin role everywhere and manages users, runners, and the vault's own settings. The `owner` user a fresh vault creates is one.
 
-Anyone may read a public repository, signed in or not. A private repository is visible to its collaborators, the collection's owners, and site admins, and to nobody else: everyone else gets the same 404 an absent repository gets, on the web, over git, in the API, and in every listing, so a private name proves nothing by existing. A repository is made private at creation (`--private`, or the checkbox on the new-repository form) or from its settings page later; push-to-create always creates public repositories, since a push has no way to carry the flag. A fork of a private repository starts private. One deliberate exception: a private repository's published site stays public, like GitHub Pages on a private repository, because the sites hostname serves without sessions; withdraw the site directory if the site must go too.
+Anyone may read a public repository, signed in or not. A private repository is visible to its collaborators, the collection's owners, and site admins, and to nobody else: everyone else gets the same 404 an absent repository gets, on the web, over git, in the API, and in every listing, so a private name proves nothing by existing. A repository is made private at creation (`--private`, or the checkbox on the new-repository form) or from its settings page later; push-to-create always creates public repositories, since a push has no way to carry the flag. A fork of a private repository starts private. One deliberate exception: a private repository's published site stays public, like GitHub Pages on a private repository, because the sites hostname serves without sessions; disable the site in the repository's settings if the site must go too.
 
 A token may be minted with a scope, globs over `collection/repo`, which narrows what its holder may reach: outside its globs the token grants nothing beyond what an anonymous visitor gets, and inside them it caps at the write role, so a restricted token can never administer anything. This is how a script or a CI job is given one repository and nothing else.
 

@@ -1,6 +1,6 @@
 # Sites
 
-A static site per repository, served from a sibling directory.
+A static site per repository, served from a sibling directory, once the site is enabled.
 
 A repository can have a static site, served at `/<collection>/<repo>/site/`. The content is plain files in a sibling directory next to the bare repository:
 
@@ -10,9 +10,39 @@ A repository can have a static site, served at `/<collection>/<repo>/site/`. The
   webapp.site/    (its site; index.html at the root)
 ```
 
-Anything that can write files can publish: a manual copy, a build script, a workflow. Directory requests serve `index.html`, and a `404.html` at the site root, if present, is used for missing paths. When the directory exists, a Site tab appears in the repository's navigation, and the repository's row in its collection listing carries a globe link straight to the site.
+Anything that can write files can publish: a manual copy, a build script, a workflow. Directory requests serve `index.html`, and a `404.html` at the site root, if present, is used for missing paths. While the site is enabled and the directory exists, a Site tab appears in the repository's navigation, and the repository's row in its collection listing carries a globe link straight to the site.
 
 Everything in the directory is served, dotfiles included, so copy in what you mean to publish and not, say, a working tree with its `.git` alongside it. What is not served is anything outside the directory: a symlink that resolves out of the site, including into another repository's site, reads as a missing file.
+
+## Enabling a site
+
+A site is opt-in per repository, the way GitHub Pages is. The directory alone publishes nothing: until the site is enabled, its routes answer 404, no Site tab appears, and a workflow's deploy step is refused. Enabling and the rest of the site settings take the admin role on the repository, like visibility, because enabling a site publishes whatever the directory holds to everyone.
+
+The switch lives in the Site box of the repository's settings page, in `PATCH /api/repos/<c>/<r>` as `siteEnabled`, and in the CLI:
+
+```bash
+mochi repo edit alice/webapp --enable-site
+mochi repo edit alice/webapp --disable-site
+```
+
+Disabling keeps the files: the directory stays on disk (and stays in backups), nothing is served, and re-enabling brings the site straight back. Deleting the directory is a separate, manual act.
+
+On disk the settings are `<repo>.git/site.json` beside git's own config, hand-editable like everything else in a vault:
+
+```json
+{
+  "enabled": true,
+  "source": "copy",
+  "label": ""
+}
+```
+
+A missing or unreadable file reads as disabled. Note that this makes sites strictly opt-in on upgrade: a vault created before this setting existed serves none of its sites until each is enabled.
+
+`source` says how the site is published, and it gates writing rather than serving, since the server cannot tell how bytes landed in a directory it only reads:
+
+- `"copy"` (the default): whatever can write the vault publishes by writing the directory, and the runner's `deploy-pages` endpoint is refused.
+- `"actions"`: a workflow run's `deploy-pages` step may publish the site too. See [Workflows](workflows.md).
 
 ## Site content is untrusted code
 
@@ -76,6 +106,40 @@ The double hyphen is the separator, and it is unambiguous because neither half m
 Repository names are more permissive than that, so **not every repository is eligible**, and an ineligible one keeps being served on the forge host under the sandbox. This refuses rather than lowercases, because lowercasing `Webapp1` would collide with a `webapp1` beside it: hostnames are case-insensitive and both names are legal on disk. It is a documented rule, not a bug, and the Site tab points wherever that repository's site actually is.
 
 A value that is not a plausible hostname is ignored and the default used, the same way an unknown theme name is, so a typo in `config.json` cannot take the vault down or serve sites from a name no certificate covers.
+
+### Choosing the label
+
+A repository need not keep the derived `<repo>--<collection>` label. Its admin can pick one, in the Site box of the settings page, as `siteLabel` on the PATCH route, or with:
+
+```bash
+mochi repo edit alice/webapp --site-label myapp     # myapp.vault-sites.example.org
+mochi repo edit alice/webapp --site-label ''        # back to webapp--alice
+```
+
+A custom label is a single DNS label with no double hyphen, which is what keeps it from ever colliding with a derived name; a label another repository already holds is refused, naming the holder. While a custom label is set, the derived hostname answers `301` to it, path and query kept, the same way a renamed repository's old hostname does. This is also the way out for a repository whose names are not usable as a hostname label: pick a label that is.
+
+### A custom domain
+
+A site can also be served from a domain of its own, `docs.example.org` rather than anything under the sites host. Attaching one takes a site admin, not merely the repository's, because it is the operator's act all the way down: the operator points the DNS record at the vault, covers the name with a certificate, and answers for what the server serves under it.
+
+```bash
+mochi repo edit alice/webapp --site-domain docs.example.org
+mochi repo edit alice/webapp --site-domain ''       # detach it
+```
+
+The mapping lives in `<vault>/domains.json`, beside `config.json` and hand-editable like it:
+
+```json
+{
+  "domains": {
+    "docs.example.org": "alice/webapp"
+  }
+}
+```
+
+A repository holds at most one domain, and a domain maps to one repository; attaching a domain another repository holds is refused, naming the holder. The domain becomes the site's canonical origin: the sites-host name (derived or custom label) answers `301` to it, and the forge path redirects there. The domain follows the repository through renames and is dropped with a deletion, so a repository created later under the name does not inherit it. On its domain the site is served exactly as it is on a sites hostname: unsandboxed, no session resolved, no cookie set, and `GET`/`HEAD` only.
+
+Two cautions. The server serves a mapped domain to whatever `Host` header names it, so the reverse proxy or DNS is what decides which requests arrive; TLS for the domain is the operator's to provide, alongside the sites-host wildcard. And the server does not know the forge's own hostname, so nothing can stop a mapping from claiming it; map a domain you also use for the forge and the forge stops answering there. The sites host and its subdomains are refused, since those names already have a meaning.
 
 ### What a hostname does and does not isolate
 

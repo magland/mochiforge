@@ -243,6 +243,15 @@ cat > "$(repos_dir alice)/webapp.site/404.html" <<'EOF'
   <body><h1>404</h1><p>No such page here.</p><p><a href="./">Home</a></p></body>
 </html>
 EOF
+# Sites are opt-in per repository: the directory alone publishes nothing until
+# the site is enabled in <repo>.git/site.json.
+cat > "$(repos_dir alice)/webapp.git/site.json" <<'EOF'
+{
+  "enabled": true,
+  "source": "copy",
+  "label": ""
+}
+EOF
 
 # ---- bob/notes ----
 

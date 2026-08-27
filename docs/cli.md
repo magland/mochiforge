@@ -116,6 +116,10 @@ mochi repo edit --add-topic mri                # keep the rest and add one
 mochi repo edit --remove-topic numbl           # keep the rest and drop one
 mochi repo list --topic webgpu                 # only repositories carrying a topic
 mochi repo edit --upstream https://github.com/owner/repo   # record what mochi sync and pr export use
+mochi repo edit --enable-site                  # serve the <repo>.site directory (admin role)
+mochi repo edit --site-source actions          # let a workflow's deploy-pages step publish it
+mochi repo edit --site-label myapp             # myapp.<sites host> instead of <repo>--<collection>
+mochi repo edit --site-domain docs.example.org # a domain of the site's own (site admin)
 mochi repo fork demo/proj myfork
 mochi repo rename demo/proj newname --collection othercollection
 mochi repo delete demo/old --yes

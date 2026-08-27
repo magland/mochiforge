@@ -2,9 +2,8 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Request, Response } from 'express';
-import { loadConfig } from './config';
+import { isSiteRequest } from './domains';
 import { fileCache } from './filecache';
-import { isUnderSitesHost } from './siteshost';
 import { isSiteAdmin } from './perms';
 import { AuthResult, authForBinding, loadVault } from './vault';
 
@@ -86,13 +85,14 @@ function sign(root: string, data: string): string {
 }
 
 /**
- * Whether this request arrived on a hostname that serves sites. No session is
- * resolved and none is minted there. The sites middleware never asks for a
- * viewer, so this is defence in depth: it makes structurally true what would
- * otherwise be true only by inspection.
+ * Whether this request arrived on a hostname that serves sites, the sites host
+ * and every custom domain alike. No session is resolved and none is minted
+ * there. The sites middleware never asks for a viewer, so this is defence in
+ * depth: it makes structurally true what would otherwise be true only by
+ * inspection.
  */
 function onSitesHost(req: Request, root: string): boolean {
-  return isUnderSitesHost(loadConfig(root).sites.host, req.hostname);
+  return isSiteRequest(root, req.hostname);
 }
 
 function writeSessionCookie(req: Request, res: Response, root: string, payload: SessionPayload): void {

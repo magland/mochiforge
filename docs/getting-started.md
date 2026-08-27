@@ -60,7 +60,7 @@ The interface is deliberately GitHub-shaped, so most of it needs no instructions
 
 - **Editing in the browser.** Open a file and edit it, or add one; the commit is authored as you and lands on the branch you were reading.
 - **Issues and pull requests.** Both are stored as markdown files in the vault, beside the repository. Open an issue, then look in `myvault/collections/alice/repos/myproject.issues/` to see it as a file.
-- **A static site.** Create `myvault/collections/alice/repos/myproject.site/` and put an `index.html` in it. A Site tab appears in the repository's navigation, serving it at `/alice/myproject/site/`. See [Sites](sites.md).
+- **A static site.** Create `myvault/collections/alice/repos/myproject.site/` and put an `index.html` in it, then enable the site in the Site box of the repository's settings page. A Site tab appears in the repository's navigation, serving it at `/alice/myproject/site/`. See [Sites](sites.md).
 - **The command line.** `mochi login http://127.0.0.1:3000` hands the same token to the CLI, after which `mochi repo list`, `mochi issue list`, and the rest work against this vault (see [The command line](cli.md)).
 
 Two things behave differently on a laptop vault, and are worth knowing about rather than debugging: [workflows](workflows.md) do nothing until a runner is started separately with Docker, and other machines cannot reach the server, because it binds `127.0.0.1` unless told otherwise. `--host 0.0.0.0` opens it to your network, which is reasonable on a trusted network and not on the open internet, since tokens travel as Basic-auth passwords over plain HTTP.

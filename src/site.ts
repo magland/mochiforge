@@ -2,11 +2,13 @@ import { Express, Request, Response } from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
 import { loadConfig } from './config';
+import { domainRepoFor, repoDomain } from './domains';
 import { containedIn } from './ops';
 import { resolveRepoRedirect } from './redirects';
 import { esc } from './render';
 import { findRepo, siteDir } from './scan';
-import { isUnderSitesHost, parseSiteHost, siteHostFor } from './siteshost';
+import { findRepoBySiteLabel, siteSettings } from './sitesettings';
+import { isUnderSitesHost, normalizeHostname, parseSiteHost, siteHostFor, siteHostLabel } from './siteshost';
 import { send404, wildcard } from './web';
 
 // Serving a repository's static site. This is the only place in mochi where
@@ -93,6 +95,17 @@ export function serveSite(
   const found = findRepo(root, collection, repo);
   if (!found) {
     sendSite404(res, mode, `Repository ${collection}/${repo} not found`);
+    return;
+  }
+  // The switch, checked before the directory: a site that is not enabled is
+  // not served whatever is on disk, and the files stay where they are for the
+  // day it is enabled again.
+  if (!siteSettings(found.dir).enabled) {
+    sendSite404(
+      res,
+      mode,
+      `${found.collection}/${found.name} does not publish a site. A repository admin can enable one in its settings.`
+    );
     return;
   }
   const dir = siteDir(root, found.collection, found.name);
@@ -191,13 +204,47 @@ function minimalPage(status: number, title: string, body: string): string {
 }
 
 /**
+ * The one hostname a repository's site answers on, or null when it is served
+ * on the forge host. Precedence is custom domain, then custom label on the
+ * sites host, then the derived <repo>--<collection> label; every other
+ * hostname that reaches the same site 301s here, so published links converge
+ * on one origin the way they do for a rename.
+ */
+function canonicalSiteHostname(root: string, collection: string, repo: string, repoDir: string): string | null {
+  const domain = repoDomain(root, collection, repo);
+  if (domain) return domain;
+  const sitesHost = loadConfig(root).sites.host;
+  if (!sitesHost) return null;
+  const label = siteSettings(repoDir).label;
+  if (label) return `${label}.${sitesHost}`;
+  return siteHostFor(sitesHost, collection, repo);
+}
+
+/**
  * The site's own URL for a repository, when it has an origin of its own, or null
  * when it is served on the forge host. The scheme mirrors the request, so a
- * local http vault redirects to http and stays usable.
+ * local http vault redirects to http and stays usable. This is where the site
+ * would be served, whether or not it is enabled; what gates links and
+ * redirects is the enabled flag, which the callers that need it check.
  */
 export function siteHostUrl(root: string, req: Request, collection: string, repo: string): string | null {
-  const sitesHost = loadConfig(root).sites.host;
-  const host = siteHostFor(sitesHost, collection, repo);
+  const found = findRepo(root, collection, repo);
+  const host = found
+    ? canonicalSiteHostname(root, found.collection, found.name, found.dir)
+    : siteHostFor(loadConfig(root).sites.host, collection, repo);
+  return host ? `${req.protocol}://${host}` : null;
+}
+
+/**
+ * The origin the forge-path site routes should redirect to, or null to serve
+ * in place. Unlike siteHostUrl it answers only for a site that is enabled: a
+ * disabled site's forge path should 404 where it is asked rather than send the
+ * visitor to another origin to be told the same thing.
+ */
+export function siteRedirectUrl(root: string, req: Request, collection: string, repo: string): string | null {
+  const found = findRepo(root, collection, repo);
+  if (!found || !siteSettings(found.dir).enabled) return null;
+  const host = canonicalSiteHostname(root, found.collection, found.name, found.dir);
   return host ? `${req.protocol}://${host}` : null;
 }
 
@@ -215,10 +262,13 @@ export function siteHostUrl(root: string, req: Request, collection: string, repo
  */
 export function registerSiteHost(app: Express, root: string): void {
   app.use((req, res, next) => {
+    // A custom domain is checked first because it is the one site hostname
+    // that is not under the sites host: one stat-cached read of domains.json,
+    // the same price the config read below already pays.
+    const viaDomain = domainRepoFor(root, req.hostname);
     const sitesHost = loadConfig(root).sites.host;
-    if (!sitesHost) return next();
-    if (!isUnderSitesHost(sitesHost, req.hostname)) return next();
-    // Sites are files. Nothing on this hostname writes anything, so nothing
+    if (!viaDomain && !(sitesHost && isUnderSitesHost(sitesHost, req.hostname))) return next();
+    // Sites are files. Nothing on these hostnames writes anything, so nothing
     // needs a method that would.
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.status(405).set('Allow', 'GET, HEAD').type('html').send(
@@ -226,31 +276,59 @@ export function registerSiteHost(app: Express, root: string): void {
       );
       return;
     }
-    const named = parseSiteHost(sitesHost, req.hostname);
+    // What the hostname names: the mapped repository for a custom domain, and
+    // under the sites host either a derived <repo>--<collection> label or a
+    // custom label some repository claimed. The two label kinds cannot
+    // collide, since a derived label always contains `--` and a custom one
+    // never may.
+    let named = viaDomain;
     if (!named) {
-      // A request to the bare sites host, or to a deeper name under it, gets a
-      // minimal 404 rather than falling through to the forge, so the forge is
-      // reachable only on its own hostname.
+      const label = siteHostLabel(sitesHost, req.hostname);
+      if (label !== null) {
+        named = label.includes('--') ? parseSiteHost(sitesHost, req.hostname) : findRepoBySiteLabel(root, label);
+      }
+    }
+    if (!named) {
+      // A request to the bare sites host, to a deeper name under it, or to a
+      // label nothing answers to gets a minimal 404 rather than falling
+      // through to the forge, so the forge is reachable only on its own
+      // hostname.
       setSiteHeaders(res, 'sandbox');
       res.status(404).type('html').send(
         minimalPage(404, 'No site here', 'This hostname does not name a repository site in this vault.')
       );
       return;
     }
-    // A site has a hostname of its own, built from the repository's name, so a
-    // rename moves the site to a different hostname and every published link
-    // to it stops resolving to anything. The redirect the forge host does for
-    // paths is done here for hostnames, on the same terms: only when no
-    // repository answers to the name in this one.
-    if (!findRepo(root, named.collection, named.repo)) {
+    const redirect = (host: string) => {
+      res
+        .status(301)
+        .set('Cache-Control', 'no-store')
+        .set('Location', `${req.protocol}://${host}${req.originalUrl}`)
+        .end();
+    };
+    const found = findRepo(root, named.collection, named.repo);
+    if (!found) {
+      // A site has a hostname of its own, built from the repository's name, so
+      // a rename moves the site to a different hostname and every published
+      // link to it stops resolving to anything. The redirect the forge host
+      // does for paths is done here for hostnames, on the same terms: only
+      // when no repository answers to the name in this one.
       const moved = resolveRepoRedirect(root, named.collection, named.repo);
-      const host = moved && siteHostFor(sitesHost, moved.collection, moved.repo);
-      if (host) {
-        res
-          .status(301)
-          .set('Cache-Control', 'no-store')
-          .set('Location', `${req.protocol}://${host}${req.originalUrl}`)
-          .end();
+      const movedRepo = moved && findRepo(root, moved.collection, moved.repo);
+      const host = movedRepo && canonicalSiteHostname(root, movedRepo.collection, movedRepo.name, movedRepo.dir);
+      if (host && host !== normalizeHostname(req.hostname)) {
+        redirect(host);
+        return;
+      }
+    } else {
+      // A repository with a custom domain or a custom label still answers on
+      // its other hostnames, by sending the visitor to the one it prefers, the
+      // way a renamed repository's old hostname does. no-store for the same
+      // reason: which hostname is canonical is a setting, and a cached 301
+      // would outlive changing it.
+      const canonical = canonicalSiteHostname(root, found.collection, found.name, found.dir);
+      if (canonical && canonical !== normalizeHostname(req.hostname)) {
+        redirect(canonical);
         return;
       }
     }

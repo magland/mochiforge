@@ -18,6 +18,7 @@ import { COLLECTION_FILE, addCollectionOwner, repoIsPrivate, setRepoPrivate } fr
 import { loadVault } from './vault';
 import { looksLikePointer } from './pointer';
 import { parseUpstream } from './source';
+import { dropCollectionDomains, dropRepoDomains, moveCollectionDomains, moveRepoDomains } from './domains';
 import { forgetCollectionRedirects, forgetRepoRedirects, recordCollectionRename, recordRepoRename } from './redirects';
 import { REPOS_DIR, collectionDir, repoPath, reposDir } from './layout';
 import {
@@ -993,6 +994,10 @@ export async function renameRepo(
   // and a move that then failed would point at a repository that is not there.
   // See src/redirects.ts for what the redirect does and does not survive.
   recordRepoRename(root, collection, name, toCollection, toName);
+  // A custom domain maps to the repository by name, so the mapping is
+  // re-pointed with the rename; the domain itself does not change, which is
+  // the point of having one.
+  moveRepoDomains(root, collection, name, toCollection, toName);
 }
 
 /**
@@ -1068,6 +1073,9 @@ export async function renameCollection(
   // - the collection page and every repository in it - is redirected to the new
   // one until something else is created under that name.
   recordCollectionRename(root, name, toName);
+  // And every custom domain into the collection follows it, as the repository
+  // hook above does for one.
+  moveCollectionDomains(root, name, toName);
 }
 
 /**
@@ -1106,6 +1114,7 @@ export function deleteCollection(root: string, name: string): void {
   // this name would otherwise inherit the traffic a former name of this one
   // still sends.
   forgetCollectionRedirects(root, name);
+  dropCollectionDomains(root, name);
 }
 
 /**
@@ -1155,8 +1164,9 @@ export async function deleteRepo(
   // And any redirect that led here. A redirect pointing at a repository that
   // no longer exists is inert, but one left pointing at a name that is later
   // re-created would send traffic meant for the deleted repository to whatever
-  // took its place.
+  // took its place. A custom domain is dropped on exactly the same reasoning.
   forgetRepoRedirects(root, collection, name);
+  dropRepoDomains(root, collection, name);
 }
 
 

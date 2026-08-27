@@ -50,6 +50,8 @@ A few actions are not ordinary programs: they are clients for services that exis
 
 Everything else runs unmodified, `actions/setup-node` and the rest included. Note that `actions/upload-pages-artifact` is *not* substituted: it is an ordinary composite action that tars a directory and calls `upload-artifact`, so the real one works as it is, on top of Mochi Forge's `upload-artifact`.
 
+`deploy-pages` publishes only where the repository's settings say a workflow may: the site must be enabled and its source set to workflow deploys (`--site-source actions`), both admin-role settings described in [Sites](sites.md#enabling-a-site). A deploy against a site that is disabled, or one published by copied files, fails with the setting to change named in the refusal, so a workflow cannot overwrite a site somebody maintains by hand.
+
 Substituting by name rather than implementing GitHub's artifact and Pages wire protocols is a deliberate trade: far less code, at the cost of following a handful of action interfaces as they change.
 
 ### Artifacts

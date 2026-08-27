@@ -32,6 +32,7 @@ import {
   canAdminRepo,
   canCreateRepo,
   collectionOwners,
+  isSiteAdmin,
   removeCollaborator,
   repoAccess,
   repoIsPrivate,
@@ -39,7 +40,9 @@ import {
   setCollaborator,
   setRepoPrivate,
 } from '../perms';
+import { clearRepoDomain, repoDomain, setRepoDomain } from '../domains';
 import { findRepo, isValidName, reservedRepoSuffix, upstreamOf } from '../scan';
+import { editSiteSettings, isUsableSiteLabel, siteLabelConflict, siteSettings } from '../sitesettings';
 import { repoTopics, setTopics } from '../topics';
 import { loadVault } from '../vault';
 import {
@@ -463,24 +466,89 @@ export function registerWriteApi(
       apiError(res, 400, '"private" must be a boolean');
       return;
     }
-    if (description === null && defaultBranch === null && upstream === null && topics === undefined && priv === undefined) {
-      apiError(res, 400, 'nothing to change; provide "description", "defaultBranch", "upstream", "topics", and/or "private"');
+    const siteEnabled = body.siteEnabled;
+    if (siteEnabled !== undefined && typeof siteEnabled !== 'boolean') {
+      apiError(res, 400, '"siteEnabled" must be a boolean');
       return;
     }
-    // Visibility is the one setting here that takes the admin role rather than
-    // write: publishing a repository, or withdrawing one from everybody who
-    // could see it, is the repository's own business the way deleting it is.
-    if (priv !== undefined && !canAdminRepo(root, ctx.auth, ctx.repo)) {
-      apiError(res, 403, `changing visibility needs the admin role on ${ctx.repo.collection}/${ctx.repo.name}`);
+    const siteSource = body.siteSource;
+    if (siteSource !== undefined && siteSource !== 'copy' && siteSource !== 'actions') {
+      apiError(res, 400, '"siteSource" must be "copy" or "actions"');
       return;
     }
+    const siteLabel = stringField(body, 'siteLabel');
+    if (siteLabel !== null && siteLabel !== '' && !isUsableSiteLabel(siteLabel)) {
+      apiError(
+        res,
+        400,
+        'a site label is lowercase letters, digits, and single interior hyphens, at most 63 characters'
+      );
+      return;
+    }
+    const siteDomain = stringField(body, 'siteDomain');
+    const changingSite = siteEnabled !== undefined || siteSource !== undefined || siteLabel !== null;
+    if (
+      description === null &&
+      defaultBranch === null &&
+      upstream === null &&
+      topics === undefined &&
+      priv === undefined &&
+      !changingSite &&
+      siteDomain === null
+    ) {
+      apiError(
+        res,
+        400,
+        'nothing to change; provide "description", "defaultBranch", "upstream", "topics", "private", "siteEnabled", "siteSource", "siteLabel", and/or "siteDomain"'
+      );
+      return;
+    }
+    // Visibility takes the admin role rather than write: publishing a
+    // repository, or withdrawing one from everybody who could see it, is the
+    // repository's own business the way deleting it is. The site settings are
+    // on the same footing, since enabling a site publishes what the directory
+    // holds to everyone.
+    if ((priv !== undefined || changingSite) && !canAdminRepo(root, ctx.auth, ctx.repo)) {
+      apiError(res, 403, `changing visibility or site settings needs the admin role on ${ctx.repo.collection}/${ctx.repo.name}`);
+      return;
+    }
+    // A custom domain is the operator's act: the operator points DNS at the
+    // vault and covers the name with a certificate, so attaching one takes a
+    // site admin, not merely the repository's.
+    if (siteDomain !== null && !isSiteAdmin(ctx.auth)) {
+      apiError(res, 403, 'attaching a custom domain takes a site admin');
+      return;
+    }
+    if (siteLabel !== null && siteLabel !== '') {
+      const holder = siteLabelConflict(root, siteLabel, ctx.repo.collection, ctx.repo.name);
+      if (holder) {
+        apiError(res, 409, `the label ${siteLabel} is already used by ${holder}`);
+        return;
+      }
+    }
+    if (siteDomain !== null && siteDomain !== '') {
+      const problem = setRepoDomain(root, ctx.repo.collection, ctx.repo.name, siteDomain);
+      if (problem) {
+        apiError(res, problem.kind === 'conflict' ? 409 : 400, problem.message);
+        return;
+      }
+    }
+    if (siteDomain === '') clearRepoDomain(root, ctx.repo.collection, ctx.repo.name);
     try {
       if (description !== null) setDescription(ctx.repo.dir, description);
       if (defaultBranch !== null) await setDefaultBranch(ctx.repo.dir, defaultBranch);
       if (upstream !== null) await setUpstream(ctx.repo.dir, upstream);
       if (topics !== undefined) setTopics(ctx.repo.dir, topics);
       if (priv !== undefined) setRepoPrivate(ctx.repo.dir, priv);
+      if (changingSite) {
+        editSiteSettings(ctx.repo.dir, (s) => {
+          if (siteEnabled !== undefined) s.enabled = siteEnabled;
+          if (siteSource !== undefined) s.source = siteSource;
+          if (siteLabel !== null) s.label = siteLabel;
+        });
+      }
       const branches = await ctx.repo.listRefs('heads');
+      const settings = siteSettings(ctx.repo.dir);
       res.json({
         collection: ctx.repo.collection,
         name: ctx.repo.name,
@@ -488,6 +556,12 @@ export function registerWriteApi(
         upstream: upstreamOf(ctx.repo.dir)?.url ?? null,
         topics: repoTopics(ctx.repo.dir),
         private: repoIsPrivate(ctx.repo.dir),
+        site: {
+          enabled: settings.enabled,
+          source: settings.source,
+          label: settings.label === '' ? null : settings.label,
+          domain: repoDomain(root, ctx.repo.collection, ctx.repo.name),
+        },
         changed: true,
       });
     } catch (e) {

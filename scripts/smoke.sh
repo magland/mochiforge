@@ -2019,6 +2019,15 @@ body_has "plainly" '"exists":false'
 mkdir -p "$VAULT/collections/apis/repos/made.site/css"
 echo '<h1>made</h1>' > "$VAULT/collections/apis/repos/made.site/index.html"
 echo 'body{}' > "$VAULT/collections/apis/repos/made.site/css/site.css"
+# The directory alone publishes nothing: a site is opt-in per repository, and
+# the switch is a setting the PATCH route carries like visibility.
+api "files on disk are not a site until it is enabled" 200 "$BASE/api/repos/apis/made/site"
+body_has "the switch is off" '"enabled":false'
+body_has "so nothing is served" '"exists":false'
+body_has "though what is on disk is reported" '"entries":2'
+api "enabling the site is a repository setting" 200 -X PATCH -H "$JSON_CT" \
+  --data '{"siteEnabled":true}' "$BASE/api/repos/apis/made"
+body_has "echoed back" '"enabled":true'
 api "api reports a repository's site" 200 "$BASE/api/repos/apis/made/site"
 body_has "saying it has one" '"exists":true'
 body_has "and how many files are in it" '"entries":2'
@@ -2693,6 +2702,16 @@ echo '<h1>site ok</h1>' > "$SITE/index.html"
 echo '<h1>sub index</h1>' > "$SITE/sub/index.html"
 echo 'a real file' > "$SITE/sub/real.txt"
 echo '<h1>site not found</h1>' > "$SITE/404.html"
+# A site is opt-in, like GitHub Pages: the directory alone publishes nothing
+# until a repository admin enables the site, and the refusal says which switch
+# is off rather than pretending the files are missing.
+check "a site is not served until it is enabled" 404 "$BASE/pushed/created/site/"
+body_has "saying the site is not enabled" 'does not publish a site'
+check "the collection listing carries no site link yet" 200 "$BASE/pushed"
+body_lacks "until the site is enabled" 'class="site-link"'
+api "a repository admin enables the site" 200 -X PATCH -H "$JSON_CT" \
+  --data '{"siteEnabled":true}' "$BASE/api/repos/pushed/created"
+body_has "and the api echoes it" '"enabled":true'
 check "site served" 200 "$BASE/pushed/created/site/"
 body_has "site content" 'site ok'
 # The collection listing points at the site directly, so a visitor scanning a
@@ -2846,7 +2865,7 @@ body_lacks "answering for itself rather than with forge chrome" 'assets/style.cs
 # would arrive here unstyled, since this origin serves none of its assets.
 check "a repository with no site directory is a plain 404 on its hostname" 404 "$BASE/" -H "Host: proj--demo.sites.localhost"
 body_lacks "with no forge stylesheet to load from this origin" 'assets/style.css'
-body_has "saying what is missing" 'No site for demo/proj'
+body_has "saying what is missing" 'does not publish a site'
 check "and a path inside that absent site too" 404 "$BASE/anything.html" -H "Host: proj--demo.sites.localhost"
 body_lacks "still without forge chrome" 'assets/style.css'
 # A site's hostname is built from the repository's name, so a rename moves the
@@ -2864,12 +2883,51 @@ body_has "with its index" 'site ok'
 # Sites are files, so nothing on this hostname needs a method that writes.
 check "a write method on a site host is refused" 405 -X POST -H "Host: $SITE_HOST" "$BASE/"
 
+# A repository may claim its own label under the sites host, and the derived
+# hostname then redirects to it, on the terms a rename's redirect uses.
+api "a custom label is a repository setting" 200 -X PATCH -H "$JSON_CT" \
+  --data '{"siteLabel":"myapp"}' "$BASE/api/repos/pushed/created"
+body_has "echoed back" '"label":"myapp"'
+check "the custom label serves the site" 200 -H 'Host: myapp.sites.localhost' "$BASE/"
+body_has "with its index" 'site ok'
+check "the derived hostname redirects to the label" 301 -D "$TMP/headers" -H "Host: $SITE_HOST" "$BASE/sub/real.txt"
+header_has "keeping the path" 'location: http://myapp.sites.localhost/sub/real.txt'
+api "a label another repository holds is refused" 409 -X PATCH -H "$JSON_CT" \
+  --data '{"siteLabel":"myapp"}' "$BASE/api/repos/apis/made"
+body_has "naming the holder" 'pushed/created'
+api "clearing the label goes back to the derived hostname" 200 -X PATCH -H "$JSON_CT" \
+  --data '{"siteLabel":""}' "$BASE/api/repos/pushed/created"
+check "which serves again" 200 -H "Host: $SITE_HOST" "$BASE/"
+
+# A custom domain, attached by a site admin, is the site's canonical origin:
+# it serves there, its sites-host name redirects there, and the forge's
+# authority stays off it exactly as it stays off the sites host.
+api "a site admin attaches a custom domain" 200 -X PATCH -H "$JSON_CT" \
+  --data '{"siteDomain":"created.example.test"}' "$BASE/api/repos/pushed/created"
+body_has "echoed back" '"domain":"created.example.test"'
+check "the domain serves the site" 200 -D "$TMP/headers" -H 'Host: created.example.test' "$BASE/"
+body_has "with its index" 'site ok'
+header_lacks "unsandboxed, since the origin is doing that work" 'content-security-policy'
+check "the sites-host name redirects to the domain" 301 -D "$TMP/headers" -H "Host: $SITE_HOST" "$BASE/"
+header_has "as the canonical origin" 'location: http://created.example.test/'
+check "no session is resolved on a custom domain" 200 -D "$TMP/headers" -b "$JAR" -H 'Host: created.example.test' "$BASE/"
+body_lacks "no signed-in chrome" '>owner<'
+header_lacks "and no cookie is set" 'set-cookie'
+api "a domain in use is refused for another repository" 409 -X PATCH -H "$JSON_CT" \
+  --data '{"siteDomain":"created.example.test"}' "$BASE/api/repos/apis/made"
+body_has "naming the holder" 'pushed/created'
+api "detaching the domain" 200 -X PATCH -H "$JSON_CT" \
+  --data '{"siteDomain":""}' "$BASE/api/repos/pushed/created"
+check "after which its own hostname serves again" 200 -H "Host: $SITE_HOST" "$BASE/"
+
 # A name that is not a legal hostname label is refused rather than mangled:
 # lowercasing My.Repo would collide with a my-repo beside it, and hostnames are
 # case-insensitive while names on disk are not. Such a repository keeps being
 # served on the forge host, sandboxed.
 mkdir -p "$VAULT/collections/demo/repos/my.site.thing.site"
 echo '<h1>dotted site</h1>' > "$VAULT/collections/demo/repos/my.site.thing.site/index.html"
+api "enable the dotted repository's site" 200 -X PATCH -H "$JSON_CT" \
+  --data '{"siteEnabled":true}' "$BASE/api/repos/demo/my.site.thing"
 check "an ineligible repository is served on the forge host" 200 -D "$TMP/headers" "$BASE/demo/my.site.thing/site/"
 body_has "with its content" 'dotted site'
 header_has "sandboxed, as before" 'content-security-policy: sandbox'

@@ -3,9 +3,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { withFileLock, writeFileAtomic } from './atomic';
 import { loadConfig } from './config';
+import { domainRepoFor, isSiteRequest } from './domains';
 import { resolveRepoRedirect } from './redirects';
 import { findRepo, isValidName } from './scan';
-import { isUnderSitesHost, parseSiteHost } from './siteshost';
+import { findRepoBySiteLabel } from './sitesettings';
+import { parseSiteHost, siteHostLabel } from './siteshost';
 
 // Outgoing bytes, counted and capped.
 //
@@ -225,11 +227,12 @@ function readDays(file: string): DayRecord[] {
  * program, and reading the number is what an operator does before changing it;
  * the stylesheet and the icon because the admin page is unreadable without them.
  *
- * None of it applies on a sites hostname, where these paths belong to the site
- * being served and are ordinary traffic, exactly as isRateExempt has it.
+ * None of it applies on a sites hostname or a custom domain, where these paths
+ * belong to the site being served and are ordinary traffic, exactly as
+ * isRateExempt has it.
  */
 function isEgressExempt(root: string, req: Request): boolean {
-  if (isUnderSitesHost(loadConfig(root).sites.host, req.hostname)) return false;
+  if (isSiteRequest(root, req.hostname)) return false;
   const p = req.path;
   if (p === '/login' || p.startsWith('/login/') || p === '/logout' || p === '/api/config' || p === '/api/egress') {
     return true;
@@ -302,6 +305,23 @@ function normalizeKeys(root: string, keys: Record<string, number>): Record<strin
 }
 
 /**
+ * The repository a site hostname names, or null for a hostname that serves no
+ * site: a derived <repo>--<collection> label, a custom label some repository
+ * claimed, or a custom domain out of domains.json. The label scan only runs
+ * for a hostname that is under the sites host and is not a derived name, so
+ * ordinary traffic never pays for it.
+ */
+function siteHostRepo(root: string, hostname: string): { collection: string; repo: string } | null {
+  const domain = domainRepoFor(root, hostname);
+  if (domain) return domain;
+  const sitesHost = loadConfig(root).sites.host;
+  const named = parseSiteHost(sitesHost, hostname);
+  if (named) return named;
+  const label = siteHostLabel(sitesHost, hostname);
+  return label !== null && !label.includes('--') ? findRepoBySiteLabel(root, label) : null;
+}
+
+/**
  * Which row a request's bytes belong to.
  *
  * A site on its own hostname is recognised from the hostname; on the forge host
@@ -312,11 +332,12 @@ function normalizeKeys(root: string, keys: Record<string, number>): Record<strin
  * to none is one unmatched row rather than a row of its own.
  */
 function keyFor(root: string, req: Request): string {
-  const site = parseSiteHost(loadConfig(root).sites.host, req.hostname);
+  const site = siteHostRepo(root, req.hostname);
   if (site) {
     const resolved = resolveRepoKey(root, site.collection, site.repo);
     return resolved === null ? UNMATCHED_KEY : `${resolved}${SITE_SUFFIX}`;
   }
+  if (isSiteRequest(root, req.hostname)) return VAULT_KEY;
   const m = /^\/([^/]+)\/([^/]+)(?:\/(.*))?$/.exec(req.path);
   if (!m) return VAULT_KEY;
   let collection: string;

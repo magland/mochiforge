@@ -41,7 +41,7 @@ The same command deploys updates. See [Deploying a vault](docs/deploying.md) for
 - **Releases** tied to a tag, with Atom feeds.
 - **Forking from GitHub:** `mochi fork` imports a repository and records its upstream, `mochi sync` fast-forwards from it, and `mochi pr export` sends a pull request made here on to GitHub as one of yours. All three run on your machine, through your own git and `gh` credentials; the vault holds no GitHub token.
 - **Workflows:** GitHub Actions workflows, planned by the server and run by a Docker runner you start elsewhere, including one deployed to Fly.io with a command, which stops when idle and is woken by the vault when a job is queued. A job marked `runs-on: manual` instead waits for a command you paste on a machine of your choosing, which shows the steps and asks before executing them.
-- **Sites:** a static site per repository, sandboxed by default, optionally on its own hostname.
+- **Sites:** an opt-in static site per repository, sandboxed by default, optionally on its own hostname or a custom domain.
 - **Git:** anonymous clone over smart HTTP for public repositories and authenticated clone for private ones, token-authenticated push including push-to-create, and LFS to S3 or to the vault.
 - **CLI and JSON API** covering everything the web UI does, plus a generic `mochi api`. Built for scripts: `--json` everywhere, distinct exit codes, no prompts.
 

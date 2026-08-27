@@ -49,6 +49,24 @@ export function siteHostFor(sitesHost: string, collection: string, repo: string)
 }
 
 /**
+ * The single label a hostname adds under the sites host, or null: null for a
+ * hostname elsewhere, for the bare sites host, and for a deeper name such as
+ * a.b.<sitesHost>, which is refused and is not covered by a single wildcard
+ * certificate anyway. What the label means is the caller's question: one
+ * containing `--` is a derived <repo>--<collection> name for parseSiteHost
+ * below, and one without is a custom label a repository may have claimed.
+ */
+export function siteHostLabel(sitesHost: string, hostname: string): string | null {
+  if (!sitesHost) return null;
+  const host = normalizeHostname(hostname);
+  const suffix = `.${sitesHost}`;
+  if (!host.endsWith(suffix)) return null;
+  const label = host.slice(0, -suffix.length);
+  if (label === '' || label.includes('.')) return null;
+  return label;
+}
+
+/**
  * The collection and repository a request's hostname names, or null.
  *
  * The double hyphen is an unambiguous separator precisely because neither half
@@ -58,14 +76,8 @@ export function siteHostFor(sitesHost: string, collection: string, repo: string)
  * the names with findRepo as usual.
  */
 export function parseSiteHost(sitesHost: string, hostname: string): { collection: string; repo: string } | null {
-  if (!sitesHost) return null;
-  const host = normalizeHostname(hostname);
-  const suffix = `.${sitesHost}`;
-  if (!host.endsWith(suffix)) return null;
-  const label = host.slice(0, -suffix.length);
-  // Exactly one remaining label. A deeper name such as a.b.<sitesHost> is
-  // refused, and is not covered by a single wildcard certificate anyway.
-  if (label === '' || label.includes('.')) return null;
+  const label = siteHostLabel(sitesHost, hostname);
+  if (label === null) return null;
   const parts = label.split('--');
   if (parts.length !== 2) return null;
   const [repo, collection] = parts;

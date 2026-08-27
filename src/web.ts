@@ -9,6 +9,7 @@ import { releaseTags } from './releases';
 import { Role, atLeast, repoIsPrivate, repoRole } from './perms';
 import { findRepo, forkParent, siteDir, upstreamOf } from './scan';
 import { Viewer, checkCsrf, getViewer } from './session';
+import { siteSettings } from './sitesettings';
 import { siteHostUrl } from './site';
 import { accountForEmail, loadVault } from './vault';
 import { RepoCtx } from './views';
@@ -161,7 +162,7 @@ export async function makeCtx(
     branches: loaded.branches,
     tags: loaded.tags,
     cloneUrl,
-    hasSite: siteDir(root, loaded.repo.collection, loaded.repo.name) !== null,
+    hasSite: siteSettings(loaded.repo.dir).enabled && siteDir(root, loaded.repo.collection, loaded.repo.name) !== null,
     siteUrl: siteOrigin
       ? `${siteOrigin}/`
       : `/${encodeURIComponent(loaded.repo.collection)}/${encodeURIComponent(loaded.repo.name)}/site/`,

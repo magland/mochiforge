@@ -31,7 +31,7 @@ import { apiError, requireApiAuth } from './auth';
 // promise.
 
 /** The state files at the vault root. Nothing else there belongs to a vault. */
-const ROOT_FILES = ['vault.json', 'config.json', 'runners.json', 'redirects.json', '.secret'];
+const ROOT_FILES = ['vault.json', 'config.json', 'runners.json', 'redirects.json', 'domains.json', '.secret'];
 
 /** Which of those `--no-secrets` leaves out. config.json holds no credential. */
 const SECRET_FILES = new Set(['vault.json', 'runners.json', '.secret']);
@@ -42,10 +42,12 @@ const SECRET_FILES = new Set(['vault.json', 'runners.json', '.secret']);
  * and its own config, so a backup that relied on it alone would lose every
  * repository's description, its `mochi.forkedFrom`, and the `receive.*`
  * settings a repository is created with. mochi.json is the worst of the
- * three to lose: it holds the private flag and the collaborators, so a
+ * set to lose: it holds the private flag and the collaborators, so a
  * restore without it would serve every private repository as public.
+ * site.json is the site's enabled switch, source, and label, which a restore
+ * without it would leave every site dark.
  */
-const REPO_FILES = ['description', 'config', 'mochi.json'];
+const REPO_FILES = ['description', 'config', 'mochi.json', 'site.json'];
 
 /** What a caller may ask to have left out, as `?exclude=runs,sites`. */
 const EXCLUDABLE = new Set(['runs', 'sites', 'lfs', 'secrets']);
