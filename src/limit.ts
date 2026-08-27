@@ -263,7 +263,7 @@ export interface AuthLimiter {
 const AUTH_WINDOW_MS = 15 * 60 * 1000;
 const AUTH_MAX_KEYS = 20000;
 /** Bearer and runner tokens carry no username, so they share one bucket in the fine-grained window. */
-const NO_USERNAME = ' token';
+const NO_USERNAME = '\x00token';
 
 /**
  * A limiter charged only on failure, so a working credential is never throttled
@@ -287,7 +287,7 @@ export function createAuthLimiter(authFailures: number): AuthLimiter {
 
   const keys = (req: Request, username: string | null) => {
     const address = clientKey(req);
-    return { address, fine: `${address} ${username ?? NO_USERNAME}` };
+    return { address, fine: `${address}\x00${username ?? NO_USERNAME}` };
   };
 
   return {
