@@ -29,6 +29,13 @@ export interface RunnerRecord {
   // the one it was registered with. Kept because the useful question about a
   // runner that stopped working is often "was its token rotated under it".
   tokenUpdatedAt?: string;
+  // The longest a job may run on this runner, in minutes, absent for one left
+  // at DEFAULT_JOB_TIMEOUT_MINUTES. It is a ceiling rather than a default: a
+  // job asking for less gets less, and a job asking for more, or asking for
+  // nothing and so inheriting GitHub's six hours, gets this. The machine
+  // belongs to whoever registered the runner, and the workflow that runs on it
+  // does not, so the bound is the operator's to set.
+  jobTimeoutMinutes?: number;
   // Where to send a request when this runner has work waiting and is not
   // there to take it. A runner that stops when idle cannot be reached at all,
   // so something has to start it; on Fly that something is a request to the
@@ -44,6 +51,36 @@ export interface RunnerRecord {
 
 export interface RunnerRegistry {
   runners: Record<string, RunnerRecord>;
+}
+
+/**
+ * How long a job may run on a runner that has not been given a limit.
+ *
+ * Twenty minutes rather than GitHub's six hours because the failure this bounds
+ * is a job that hangs: a step waiting on input that never comes, a network call
+ * with no timeout of its own. On a hosted runner that costs someone else's
+ * money; on a machine an operator registered here it costs theirs, and holds
+ * the runner against every other job in the meantime. A build that genuinely
+ * takes longer is a runner whose limit is raised, deliberately and once.
+ */
+export const DEFAULT_JOB_TIMEOUT_MINUTES = 20;
+
+/** The longest a job may run on this runner, whether it was set or defaulted. */
+export function runnerJobTimeout(runner: RunnerRecord): number {
+  return runner.jobTimeoutMinutes ?? DEFAULT_JOB_TIMEOUT_MINUTES;
+}
+
+/** Four weeks: past this a millisecond delay overflows a signed 32-bit field. */
+export const MAX_JOB_TIMEOUT_MINUTES = 40320;
+
+/**
+ * Whether a number may be stored as a runner's job timeout: whole minutes, at
+ * least one, and no more than MAX_JOB_TIMEOUT_MINUTES, past which the runner's
+ * own setTimeout would fire immediately. Refusing an absurd value is kinder
+ * than a limit that does the opposite of what it says.
+ */
+export function isUsableJobTimeout(minutes: number): boolean {
+  return Number.isInteger(minutes) && minutes >= 1 && minutes <= MAX_JOB_TIMEOUT_MINUTES;
 }
 
 export function runnersFilePath(root: string): string {
@@ -71,6 +108,13 @@ function normalize(parsed: unknown): RunnerRegistry {
       allow: strings(r.allow, 'allow'),
       createdBy: typeof r.createdBy === 'string' ? r.createdBy : '',
       createdAt: typeof r.createdAt === 'string' ? r.createdAt : '',
+      // An unusable value is dropped rather than refused, unlike the fields
+      // above whose absence would leave no runner at all: a hand-edited
+      // timeout of "soon" leaves the runner working under the default, which
+      // is the safe direction for a bound.
+      ...(typeof r.jobTimeoutMinutes === 'number' && isUsableJobTimeout(r.jobTimeoutMinutes)
+        ? { jobTimeoutMinutes: r.jobTimeoutMinutes }
+        : {}),
       ...(typeof r.tokenUpdatedAt === 'string' ? { tokenUpdatedAt: r.tokenUpdatedAt } : {}),
       ...(typeof r.wakeUrl === 'string' ? { wakeUrl: r.wakeUrl } : {}),
       ...(typeof r.wakeSecret === 'string' ? { wakeSecret: r.wakeSecret } : {}),
@@ -128,7 +172,13 @@ function newRunnerToken(): string {
 export function registerRunner(
   root: string,
   name: string,
-  opts: { labels: string[]; allow: string[]; createdBy: string; wake?: RunnerWake | null }
+  opts: {
+    labels: string[];
+    allow: string[];
+    createdBy: string;
+    jobTimeoutMinutes?: number | null;
+    wake?: RunnerWake | null;
+  }
 ): { token: string; runner: RunnerRecord } {
   return editRunners(root, () => {
     const registry = loadRunners(root);
@@ -139,6 +189,7 @@ export function registerRunner(
       allow: opts.allow,
       createdBy: opts.createdBy,
       createdAt: new Date().toISOString(),
+      ...(opts.jobTimeoutMinutes ? { jobTimeoutMinutes: opts.jobTimeoutMinutes } : {}),
       ...(opts.wake ? { wakeUrl: opts.wake.url, wakeSecret: opts.wake.secret } : {}),
     };
     registry.runners[name] = runner;
@@ -168,6 +219,27 @@ export function regenerateRunnerToken(root: string, name: string): { token: stri
     registry.runners[name] = runner;
     write(root, registry);
     return { token, runner };
+  });
+}
+
+/**
+ * Set the longest a job may run on this runner, or put it back on the default
+ * with null. Separate from registration, as the wake address is, because it is
+ * the setting most likely to be changed after the fact: the first job that
+ * runs long is when an operator learns the limit is wrong. Returns null if no
+ * runner by that name is registered.
+ */
+export function setRunnerJobTimeout(root: string, name: string, minutes: number | null): RunnerRecord | null {
+  return editRunners(root, () => {
+    const registry = loadRunners(root);
+    const existing = registry.runners[name];
+    if (!existing) return null;
+    const runner: RunnerRecord = { ...existing };
+    delete runner.jobTimeoutMinutes;
+    if (minutes !== null) runner.jobTimeoutMinutes = minutes;
+    registry.runners[name] = runner;
+    write(root, registry);
+    return runner;
   });
 }
 

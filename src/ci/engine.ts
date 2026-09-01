@@ -851,17 +851,34 @@ export class CiEngine {
     return null;
   }
 
-  // Try to lease a job now; returns null when nothing matches.
-  acquire(runnerName: string, labels: string[], allow: string[], serverUrl: string): JobSpec | null {
+  // Try to lease a job now; returns null when nothing matches. `limitMinutes`
+  // is the runner's own ceiling on how long a job may run there; see leaseJob.
+  acquire(
+    runnerName: string,
+    labels: string[],
+    allow: string[],
+    serverUrl: string,
+    limitMinutes: number | null
+  ): JobSpec | null {
     const found = this.runnableJob(labels, allow);
     if (!found) return null;
-    return this.leaseJob(found.ar, found.job, runnerName, serverUrl);
+    return this.leaseJob(found.ar, found.job, runnerName, serverUrl, limitMinutes);
   }
 
   // Lease one chosen job to a runner (registered or manual session) and build
   // the spec it executes from. The caller has already decided the job may go
   // to this runner; everything from here on is the same for both kinds.
-  private leaseJob(ar: ActiveRun, job: JobRecord, runnerName: string, serverUrl: string): JobSpec {
+  //
+  // `limitMinutes` is the longest the runner taking the job allows one to run,
+  // or null for a manual session, which has no registration to carry one and a
+  // person watching it instead.
+  private leaseJob(
+    ar: ActiveRun,
+    job: JobRecord,
+    runnerName: string,
+    serverUrl: string,
+    limitMinutes: number | null
+  ): JobSpec {
     job.status = 'running';
     job.attempts += 1;
     job.startedAt = job.startedAt ?? nowIso();
@@ -893,6 +910,12 @@ export class CiEngine {
         // default stands
       }
     }
+    // The runner's limit is a ceiling on what the workflow asked for, not a
+    // default it could override: the job runs on somebody else's machine, and
+    // six hours of a hung step is the operator's cost. A job asking for less
+    // than the ceiling keeps what it asked for, which is what makes
+    // `timeout-minutes` still worth writing.
+    if (typeof limitMinutes === 'number') timeout = Math.min(timeout, limitMinutes);
     // A private repository cannot be cloned anonymously, so a job for one
     // carries an ephemeral read token for exactly that repository (see
     // src/jobtoken.ts), living a little longer than the job may run. A public
@@ -946,10 +969,11 @@ export class CiEngine {
     labels: string[],
     allow: string[],
     serverUrl: string,
+    limitMinutes: number | null,
     timeoutMs: number,
     gone?: AbortSignal
   ): Promise<JobSpec | null> {
-    const first = this.acquire(runnerName, labels, allow, serverUrl);
+    const first = this.acquire(runnerName, labels, allow, serverUrl, limitMinutes);
     if (first) return Promise.resolve(first);
     if (gone?.aborted) return Promise.resolve(null);
     return new Promise((resolve) => {
@@ -958,7 +982,7 @@ export class CiEngine {
         resolve(null);
       }, timeoutMs);
       const onWake = () => {
-        const spec = this.acquire(runnerName, labels, allow, serverUrl);
+        const spec = this.acquire(runnerName, labels, allow, serverUrl, limitMinutes);
         if (spec) {
           cleanup();
           resolve(spec);
@@ -1135,7 +1159,7 @@ export class CiEngine {
         // the moment the job completes, and who ran a job is a fact about the
         // job. Set before leaseJob so its save persists it.
         j.manual = { user: grant.mintedBy, host: grant.host ?? '' };
-        return { kind: 'job', spec: this.leaseJob(ar, j, name, serverUrl) };
+        return { kind: 'job', spec: this.leaseJob(ar, j, name, serverUrl, null) };
       }
     }
     const queued = matching.some((j) => j.status === 'queued');

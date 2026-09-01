@@ -30,6 +30,8 @@ The expression functions are `contains`, `startsWith`, `endsWith`, `format`, `jo
 
 A job's `timeout-minutes` is enforced by the runner rather than by the vault, which is what makes it useful: the vault's lease sweep notices a runner that has stopped reporting, and a job wedged inside a step keeps reporting perfectly well. When the deadline passes the runner removes the job's container, which fails the step that was running, and the job concludes as a failure. Note that `timeout-minutes` on an individual step is accepted and then ignored, since stopping one step means stopping a process inside a container that the rest of the job still needs.
 
+What a job may ask for is bounded by the runner it lands on, which defaults to 20 minutes rather than GitHub's six hours; see [The job timeout](#the-job-timeout).
+
 Within a step: `run` with `shell` and `working-directory`, the file commands (`GITHUB_OUTPUT`, `GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_STEP_SUMMARY`), and the stdout commands (`::group::`, `::error::`, `::add-mask::` and friends). Values passed to `::add-mask::` are redacted from every later log line, on the runner, before the line is sent to the vault.
 
 Steps that `use:` an action run too. JavaScript actions and composite actions work, nested to any depth, with their `pre` and `post` scripts; actions are fetched from github.com as source tarballs and cached on the runner. Any `runs.using: node<N>` is accepted rather than a fixed list of versions, so `node12` and `node18` run as `node20` and `node24` do: an action bundle is transpiled to a conservative target, so the runner uses the container image's own node when it is at or above the version asked for, and otherwise provisions that major version and says in the log that it did. A local action (`uses: ./.github/actions/thing`) comes from the repository being built. Docker actions (`runs.using: docker`) are not implemented and fail the step with a message saying so, as do reusable workflows, `container:` jobs, and `services:`.
@@ -90,6 +92,22 @@ mochi runner add laptop --allow 'mycollection/*' --labels ubuntu-latest
 `--allow` takes globs over `collection/repo` and is the security boundary that matters: **a runner executes whatever those repositories' workflows contain, on the machine you start it on.** Registering one requires owning every collection the globs name (a site admin covers any), the same standing that governs handing out access there. Grant a runner the repositories you would let run code on that machine, and no more. Docker is isolation against accidents, not against someone who wants your laptop.
 
 The token is shown once, and only its hash is stored, as with user tokens. `--save` writes it to `~/.config/mochi/runner.json` (mode 0600) so later runs need no arguments. Registration is also available under **Admin > Runners** in the web interface, where each runner also has a page of its own showing its labels, the repositories it serves, whether the vault has heard from it, and the job it is running now.
+
+#### The job timeout
+
+A job that hangs, on a machine of your own, costs your money and holds the runner against every other job. So each runner carries the longest a job may run on it, **20 minutes by default**:
+
+```bash
+mochi runner add laptop --allow 'mycollection/*' --job-timeout 45m
+mochi runner edit laptop --job-timeout 2h
+mochi runner edit laptop --job-timeout default      # back to the vault's 20 minutes
+```
+
+It is a ceiling on what a workflow may ask for, not a default a workflow can override. A job whose `timeout-minutes` asks for less keeps what it asked for; one asking for more, or asking for nothing and so inheriting the six-hour default, is held to the runner's limit. The effective figure is decided when the job is leased and travels with it, so a change applies to the next job the runner takes rather than to one already running, and reaching the limit does what `timeout-minutes` does: the container is removed, the running step fails, and the job concludes as a failure.
+
+The same field is on the runner's page under **Admin > Runners**, `--job-timeout` on `mochi deploy fly runner`, `jobTimeoutMinutes` on `PATCH /api/runners/:name`, and reported by `mochi runner list`. A job run through a pasted exec command (`runs-on: manual`) has no runner registration to carry a limit, so there the workflow's own `timeout-minutes` decides, as it did before.
+
+Note that the bound is the operator's rather than the repository's on purpose. A workflow author can always shorten their own job; only whoever registered the machine can say how long it may be occupied.
 
 Because only the hash is kept, a token that has been lost cannot be recovered, and the honest answer is to issue a new one. **Regenerate token** on a runner's page does that, keeping the runner's labels and allow list and printing the full `mochi runner run` command to start it with. The old token stops working the moment the new one is issued, so a runner already running with it will start failing to poll and has to be restarted.
 

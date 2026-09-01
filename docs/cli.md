@@ -235,6 +235,10 @@ mochi collection rename mycollection newname
 mochi collection edit sim_instruments --site-alias sims
 mochi collection delete emptyone --yes
 
+mochi runner add laptop --allow 'mycollection/*' --job-timeout 45m
+mochi runner edit laptop --job-timeout 2h      # or 'default' for the vault's 20 minutes
+mochi runner list
+
 mochi config view
 mochi config set --theme slate --ci-runs 50
 mochi config set --ci-days 30 --ci-artifact-mb 100
@@ -247,6 +251,8 @@ A release hangs on a tag that already exists: notes for a tag nobody can check o
 There is no `release upload`. A release's downloads are the archive routes, so there is nothing to upload and no asset endpoints exist.
 
 `mochi collection rename` moves everything the collection holds: the repositories, their issues, pull requests, releases, sites, run histories, and LFS objects. It is one directory rename, so it costs the same on a collection of a hundred gigabytes as on an empty one. There is no `--yes`, since a rename that was a mistake is undone by renaming back; what it takes is ownership of the collection, and the owners travel with it. The old address is redirected to the new one, so links and existing clones keep working until something else is created under that name; see [The old address](vault.md#the-old-address). One thing does not move with it: token scopes naming the old collection cover nothing afterwards and have to be granted again under the new name. `mochi repo rename` is the same operation one level down, and can move a repository to another collection with `--collection`, which additionally takes permission to create in the destination.
+
+`mochi runner edit --job-timeout` sets the longest a single job may run on that machine, 20 minutes by default and settable at registration with the same flag on `mochi runner add`. It is a ceiling on what a workflow's `timeout-minutes` may ask for rather than a default it can override, it applies to the next job the runner takes, and `--job-timeout default` puts the runner back on the vault's own default. `mochi runner list` reports each runner's. See [The job timeout](workflows.md#the-job-timeout).
 
 Tokens are named by an id rather than by their hash, and neither a token nor its hash is ever returned: only a SHA-256 hash is stored, so there is nothing to return. An id, a creation time, and any scope of its own is what a listing gives, which is what revocation takes. Revoking the token you are using is allowed and reported rather than refused; locking yourself out is your business, and `vault.json` remains hand-editable.
 

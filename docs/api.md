@@ -329,11 +329,14 @@ Registering the runners a vault will hand jobs to. Note the plural: these are `/
 
 ```
 GET    /api/runners                    registered runners, their liveness, and the queue  (admin)
-POST   /api/runners                    register one   {name, labels?, allow}              (own every collection in allow, or site admin)
+POST   /api/runners                    register one   {name, labels?, allow, jobTimeoutMinutes?}  (own every collection in allow, or site admin)
+PATCH  /api/runners/:name              set its job timeout  {jobTimeoutMinutes}           (the same, over its allow)
 DELETE /api/runners/:name              remove one                                         (the same, over its allow)
 ```
 
-`POST` returns `{name, token, labels, allow}`, and the token once: it is what `mochi runner run --token` presents, and only its hash is kept. `allow` is a list of globs saying which repositories the runner serves and is required, since a runner with no allow list could take no job. `labels` defaults to `["ubuntu-latest"]`.
+`POST` returns `{name, token, labels, allow, jobTimeout}`, and the token once: it is what `mochi runner run --token` presents, and only its hash is kept. `allow` is a list of globs saying which repositories the runner serves and is required, since a runner with no allow list could take no job. `labels` defaults to `["ubuntu-latest"]`.
+
+`jobTimeoutMinutes` is the longest a job may run on that runner, whole minutes from 1 to 40320, and 20 by default. It is a ceiling on the job's own `timeout-minutes` rather than a default it can override, and `PATCH` changes it afterwards: `null` puts the runner back on the vault's default, an absent field is 400 rather than a no-op, and a value that is not a usable number of minutes is 400 rather than rounded. Both routes answer with `jobTimeoutMinutes` (what is stored, `null` for the default) and `jobTimeout` (what is in force), and the listing carries the same pair per runner. A change applies to the next job the runner takes; see [The job timeout](workflows.md#the-job-timeout).
 
 Registration takes ownership of every collection the `allow` globs name (a site admin covers any), because a runner executes repository-controlled code on its own machine: granting one a repository is granting that repository's authors the runner. Removing a runner takes the same standing over the allow list it was registered with. A name that is already registered is 409.
 

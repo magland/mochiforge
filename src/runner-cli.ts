@@ -32,6 +32,7 @@ interface RunnerArgs {
   wakeSecret: string | null;
   wakeUrl: string | null;
   clear: boolean;
+  jobTimeout: number | null | 'default';
   engine: 'docker' | 'podman' | null;
 }
 
@@ -51,6 +52,24 @@ function parseDuration(text: string): number {
   const n = parseInt(m[1], 10);
   const unit = (m[2] ?? 's').toLowerCase();
   return unit === 'h' ? n * 3600 : unit === 'm' ? n * 60 : n;
+}
+
+/**
+ * "20", "45m", "2h" -> minutes, for the job timeout.
+ *
+ * Separate from parseDuration above, and in a different unit, because a bare
+ * number means different things in the two places: seconds is the natural
+ * reading of --idle and the wrong reading of a job timeout, which an operator
+ * states in minutes.
+ */
+function parseTimeoutMinutes(text: string): number {
+  const m = /^(\d+)\s*(m|h)?$/i.exec(text.trim());
+  if (!m) {
+    console.error(`--job-timeout takes minutes, or a duration like 45m or 2h, got: ${text}`);
+    process.exit(1);
+  }
+  const n = parseInt(m[1], 10);
+  return (m[2] ?? 'm').toLowerCase() === 'h' ? n * 60 : n;
 }
 
 function parseArgs(args: string[], usage: () => never): RunnerArgs {
@@ -73,6 +92,7 @@ function parseArgs(args: string[], usage: () => never): RunnerArgs {
     wakeSecret: null,
     wakeUrl: null,
     clear: false,
+    jobTimeout: null,
     engine: null,
   };
   const list = (v: string): string[] => v.split(/[\s,]+/).filter((s) => s.length > 0);
@@ -100,6 +120,13 @@ function parseArgs(args: string[], usage: () => never): RunnerArgs {
     } else if (a === '--wake-secret') out.wakeSecret = args[++i];
     else if (a === '--wake-url') out.wakeUrl = args[++i];
     else if (a === '--clear') out.clear = true;
+    else if (a === '--job-timeout') {
+      // Empty (or the word 'default') puts the runner back on the vault's
+      // default, which is a real answer and not a missing one; anything else
+      // is minutes, or a duration for an operator who thinks in hours.
+      const raw = (args[++i] ?? '').trim();
+      out.jobTimeout = raw === '' || raw === 'default' ? 'default' : parseTimeoutMinutes(raw);
+    }
     else if (a === '--save') out.save = true;
     else if (a === '--engine') {
       const e = args[++i] ?? '';
@@ -156,11 +183,15 @@ export async function runnerAddCmd(args: string[], usage: () => never): Promise<
     name: a.name,
     labels,
     allow: a.allow,
+    ...(typeof a.jobTimeout === 'number' ? { jobTimeoutMinutes: a.jobTimeout } : {}),
     ...(wake ? { wakeUrl: wake.url, wakeSecret: wake.secret } : {}),
   });
   console.log(`Registered runner ${data.name}`);
   console.log(`  labels:  ${(data.labels as string[]).join(', ')}`);
   console.log(`  serving: ${(data.allow as string[]).join(', ')}`);
+  // A vault older than the setting reports no timeout, and saying nothing is
+  // better than reporting a default this CLI only assumes it has.
+  if (data.jobTimeout !== undefined) console.log(`  timeout: ${String(data.jobTimeout)} minutes per job`);
   if (wake) console.log(`  wake:    ${wake.url}`);
   console.log('');
   console.log('Runner token (shown once; only its hash is stored):');
@@ -191,6 +222,37 @@ export async function runnerAddCmd(args: string[], usage: () => never): Promise<
     console.log(`    mochi runner run --idle 5m --wake-port 3000`);
   }
   console.log('');
+}
+
+/**
+ * `mochi runner edit <name> --job-timeout <d>`: change what a registered runner
+ * is allowed to do, which for now is how long a job may run on it.
+ *
+ * Its labels and allow list are deliberately not here: both decide which jobs
+ * a machine may take, and changing them under a runner that is already trusted
+ * with a set of repositories is a re-registration rather than an edit.
+ */
+export async function runnerEditCmd(args: string[], usage: () => never): Promise<void> {
+  const a = parseArgs(args, usage);
+  if (!a.name) {
+    console.error('Which runner? Usage: mochi runner edit <name> --job-timeout <minutes>');
+    process.exit(1);
+  }
+  if (a.jobTimeout === null) {
+    console.error("Nothing to change. Pass --job-timeout <minutes>, or --job-timeout '' for the default.");
+    process.exit(1);
+  }
+  const target = await remoteTarget(a);
+  const data = await api(target, 'PATCH', `/api/runners/${encodeURIComponent(a.name)}`, {
+    jobTimeoutMinutes: a.jobTimeout === 'default' ? null : a.jobTimeout,
+  });
+  const minutes = Number(data.jobTimeout);
+  console.log(
+    data.jobTimeoutMinutes === null
+      ? `Runner ${a.name} is back on the vault's default job timeout of ${minutes} minutes.`
+      : `Jobs on ${a.name} now stop after ${minutes} minute${minutes === 1 ? '' : 's'}.`
+  );
+  console.log('Applies to the next job it takes; one already running keeps the timeout it started with.');
 }
 
 /**
@@ -244,6 +306,8 @@ interface RunnerRow extends Record<string, unknown> {
   allow: string[];
   createdBy: string;
   createdAt: string;
+  // The timeout in force, absent from a vault older than the setting.
+  jobTimeout?: number;
   lastSeen?: string | null;
   running: { collection: string; repo: string; run: number; job: string } | null;
   wakeUrl?: string | null;
@@ -321,6 +385,7 @@ is the usual reason a run sits at queued forever.`,
           r.name,
           `labels: ${r.labels.join(', ') || '(none)'}`,
           `serving: ${r.allow.join(', ') || '(none)'}`,
+          r.jobTimeout === undefined ? '' : `timeout: ${r.jobTimeout}m`,
           // A vault older than liveness reporting leaves both out, and saying
           // "seen never" of a runner that may be perfectly healthy would be
           // worse than saying nothing.

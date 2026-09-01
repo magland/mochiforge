@@ -3759,8 +3759,64 @@ check "a user token is not a runner token" 401 -H "Authorization: Bearer $OWNER_
 check "a runner token is not a user token" 401 -H "Authorization: Bearer $RUNNER_TOKEN" "$BASE/api/whoami"
 check "a runner token cannot register runners" 401 -X POST -H "Authorization: Bearer $RUNNER_TOKEN" \
   -H 'Content-Type: application/json' -d '{"name":"x","allow":["*"]}' "$BASE/api/runners"
+# A timeout may be given at registration, and a bad one is refused there too
+# rather than stored and discovered by a job that outlives it.
+check "a runner is registered with a job timeout of its own" 200 -X POST \
+  -H "Authorization: Bearer $OWNER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"patient","labels":["ubuntu-latest"],"allow":["demo/*"],"jobTimeoutMinutes":120}' "$BASE/api/runners"
+body_has "echoing what jobs there get" '"jobTimeout":120'
+check "a registration with an unusable timeout is refused" 400 -X POST \
+  -H "Authorization: Bearer $OWNER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"impatient","labels":["ubuntu-latest"],"allow":["demo/*"],"jobTimeoutMinutes":-1}' "$BASE/api/runners"
+check "and registered nothing" 404 -H "Authorization: Bearer $OWNER_TOKEN" -X PATCH \
+  -H 'Content-Type: application/json' -d '{"jobTimeoutMinutes":30}' "$BASE/api/runners/impatient"
+check "remove the runner registered with one" 302 -b "$JAR" "$BASE/admin/runners/patient/remove" \
+  --data-urlencode "csrf=$CSRF"
 check "runner list over the API" 200 -H "Authorization: Bearer $OWNER_TOKEN" "$BASE/api/runners"
 body_has "the registered runner is listed" '"smoke"'
+body_has "under the default job timeout" '"jobTimeout":20'
+body_has "which is the default rather than a setting of its own" '"jobTimeoutMinutes":null'
+
+# How long a job may run is the operator's bound on their own machine, so it
+# lives on the runner rather than in the workflow: a job's timeout-minutes may
+# ask for less than this, and asking for more gets this.
+check "the job timeout is changed over the API" 200 -X PATCH -H "Authorization: Bearer $OWNER_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"jobTimeoutMinutes":45}' "$BASE/api/runners/smoke"
+body_has "reporting what is stored" '"jobTimeoutMinutes":45'
+body_has "and what is in force" '"jobTimeout":45'
+grep -q '"jobTimeoutMinutes": 45' "$VAULT/runners.json" || { echo "FAIL: job timeout not persisted"; exit 1; }
+PASS=$((PASS+1)); echo "ok: the job timeout is persisted to runners.json"
+check "a timeout of zero is refused rather than read as no limit" 400 -X PATCH \
+  -H "Authorization: Bearer $OWNER_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"jobTimeoutMinutes":0}' "$BASE/api/runners/smoke"
+body_has "saying what a timeout is" 'whole number of minutes'
+check "so is one past what a delay can hold" 400 -X PATCH -H "Authorization: Bearer $OWNER_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"jobTimeoutMinutes":999999}' "$BASE/api/runners/smoke"
+check "and a body naming nothing" 400 -X PATCH -H "Authorization: Bearer $OWNER_TOKEN" \
+  -H 'Content-Type: application/json' -d '{}' "$BASE/api/runners/smoke"
+body_has "saying which field it takes" 'jobTimeoutMinutes'
+check "patching an unknown runner is a 404" 404 -X PATCH -H "Authorization: Bearer $OWNER_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"jobTimeoutMinutes":30}' "$BASE/api/runners/nosuchrunner"
+check "null puts it back on the default" 200 -X PATCH -H "Authorization: Bearer $OWNER_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"jobTimeoutMinutes":null}' "$BASE/api/runners/smoke"
+body_has "storing nothing" '"jobTimeoutMinutes":null'
+body_has "and reporting the default" '"jobTimeout":20'
+
+# The same setting on the runner's page, where an operator will meet it.
+check "the runner page shows the job timeout" 200 -b "$JAR" "$BASE/admin/runners/smoke"
+body_has "as a fact" 'Job timeout'
+body_has "saying it is the default" '20 minutes'
+check "a timeout that is not a number of minutes is refused" 400 -b "$JAR" \
+  "$BASE/admin/runners/smoke/job-timeout" --data-urlencode "csrf=$CSRF" --data-urlencode minutes=soon
+check "the job timeout is saved from the page" 302 -D "$TMP/headers" -b "$JAR" \
+  "$BASE/admin/runners/smoke/job-timeout" --data-urlencode "csrf=$CSRF" --data-urlencode minutes=90
+header_has "back to the runner with its confirmation" 'location: /admin/runners/smoke?flash='
+check "which the page then shows" 200 -b "$JAR" "$BASE/admin/runners/smoke"
+body_has "as hours and minutes" '1h 30m'
+check "an empty field means the default again" 302 -b "$JAR" \
+  "$BASE/admin/runners/smoke/job-timeout" --data-urlencode "csrf=$CSRF" --data-urlencode minutes=
+check "the job timeout of an unknown runner is a 404" 404 -b "$JAR" \
+  "$BASE/admin/runners/nosuchrunner/job-timeout" --data-urlencode "csrf=$CSRF" --data-urlencode minutes=30
 
 # Liveness, which the registry alone cannot answer: the runner has just called
 # whoami, so the vault has seen it, and the runs dispatched above are still
@@ -3773,6 +3829,20 @@ run_ok "runner list --json" node dist/index.js runner list --json --host "$BASE"
 stdout_is_json "as one JSON value"
 body_has "carrying the liveness field" '"lastSeen"'
 body_has "and the queue" '"queued"'
+run_ok "runner list reports the job timeout" rcli
+body_has "in the table" 'timeout: 20m'
+run_fails "runner edit needs something to change" node dist/index.js runner edit smoke --host "$BASE" --token "$OWNER_TOKEN"
+body_has "naming the flag" '--job-timeout'
+run_ok "runner edit sets the job timeout" node dist/index.js runner edit smoke --job-timeout 2h \
+  --host "$BASE" --token "$OWNER_TOKEN"
+body_has "in minutes" 'stop after 120 minutes'
+body_has "saying when it applies" 'next job it takes'
+run_ok "and puts it back on the default" node dist/index.js runner edit smoke --job-timeout default \
+  --host "$BASE" --token "$OWNER_TOKEN"
+body_has "naming the default" "vault's default job timeout of 20 minutes"
+run_fails "a job timeout that is not a duration is refused" node dist/index.js runner edit smoke \
+  --job-timeout soon --host "$BASE" --token "$OWNER_TOKEN"
+body_has "saying what one looks like" '45m'
 run_code "an unknown field names the ones there are" 2 \
   node dist/index.js runner list --json=nosuchfield --host "$BASE" --token "$OWNER_TOKEN"
 

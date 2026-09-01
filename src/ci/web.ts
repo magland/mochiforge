@@ -11,11 +11,16 @@ import { artifactPath, isValidArtifactName, listArtifacts } from './artifacts';
 import { CiEngine, listWorkflowsAt } from './engine';
 import { JobRecord, RunRecord, jobLogPath, listRuns } from './runs';
 import {
+  DEFAULT_JOB_TIMEOUT_MINUTES,
+  MAX_JOB_TIMEOUT_MINUTES,
+  isUsableJobTimeout,
   loadRunners,
   regenerateRunnerToken,
   registerRunner,
   removeRunner,
+  runnerJobTimeout,
   runnerLastSeen,
+  setRunnerJobTimeout,
   setRunnerWake,
 } from './runners';
 import { MANUAL_LABEL, MINT_TTL_MS } from './manual';
@@ -438,6 +443,8 @@ export function registerCiWeb(app: Express, root: string, engine: CiEngine): voi
       createdBy: r.createdBy,
       createdAt: r.createdAt,
       tokenUpdatedAt: r.tokenUpdatedAt,
+      jobTimeout: runnerJobTimeout(r),
+      jobTimeoutSet: r.jobTimeoutMinutes !== undefined,
       lastSeen: runnerLastSeen(name),
       running: load.running[name] ?? null,
       wakeUrl: r.wakeUrl ?? null,
@@ -513,10 +520,18 @@ export function registerCiWeb(app: Express, root: string, engine: CiEngine): voi
       );
       return;
     }
+    const minutes = jobTimeoutField(req);
+    if (minutes === 'bad') {
+      showError(
+        `A job timeout is a whole number of minutes from 1 to ${MAX_JOB_TIMEOUT_MINUTES}, or empty for the default of ${DEFAULT_JOB_TIMEOUT_MINUTES}.`
+      );
+      return;
+    }
     const { token } = registerRunner(root, name, {
       labels: labels.length ? labels : ['ubuntu-latest'],
       allow,
       createdBy: viewer.auth.username,
+      jobTimeoutMinutes: minutes,
     });
     res.type('html').send(ciViews.runnerTokenPage(viewer, name, token, baseUrlOf(req)));
   });
@@ -540,6 +555,52 @@ export function registerCiWeb(app: Express, root: string, engine: CiEngine): voi
       return;
     }
     res.type('html').send(ciViews.runnerTokenPage(viewer, name, issued.token, baseUrlOf(req), true));
+  });
+
+  /**
+   * The job timeout a form carried: a number of minutes, null for the default
+   * when the field is empty, or 'bad' for anything else. Empty is a real
+   * answer here rather than a missing one, since the field is always rendered.
+   */
+  function jobTimeoutField(req: Request): number | null | 'bad' {
+    const raw = field(req, 'minutes').trim();
+    if (raw === '') return null;
+    if (!/^\d{1,7}$/.test(raw)) return 'bad';
+    const n = parseInt(raw, 10);
+    return isUsableJobTimeout(n) ? n : 'bad';
+  }
+
+  app.post('/admin/runners/:name/job-timeout', form, (req, res) => {
+    const viewer = requireViewerPost(root, req, res);
+    if (!viewer) return;
+    if (!viewerIsAdmin(viewer)) {
+      fail(res, 403, 'Admin access is required to manage runners.', viewer);
+      return;
+    }
+    const name = req.params.name;
+    const existing = loadRunners(root).runners[name];
+    if (!existing) {
+      send404(res, `No runner named ${name} is registered.`, viewer);
+      return;
+    }
+    const back = `/admin/runners/${encodeURIComponent(name)}`;
+    const minutes = jobTimeoutField(req);
+    if (minutes === 'bad') {
+      fail(
+        res,
+        400,
+        `A job timeout is a whole number of minutes from 1 to ${MAX_JOB_TIMEOUT_MINUTES}, or empty for the default of ${DEFAULT_JOB_TIMEOUT_MINUTES}.`,
+        viewer,
+        back
+      );
+      return;
+    }
+    setRunnerJobTimeout(root, name, minutes);
+    const flash =
+      minutes === null
+        ? `${name} is back on the default job timeout of ${DEFAULT_JOB_TIMEOUT_MINUTES} minutes.`
+        : `Jobs on ${name} now stop after ${minutes} minute${minutes === 1 ? '' : 's'}.`;
+    res.redirect(`${back}?flash=${encodeURIComponent(flash)}`);
   });
 
   // Setting the address and sending a request to it are separate posts

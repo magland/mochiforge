@@ -105,10 +105,10 @@ test('an expired grant answers to nothing, and a new mint prunes it', () => {
 
 test('the engine never hands a manual job to a runner, whatever labels it claims', () => {
   const { engine } = vaultWithRun([mkJob('build', ['ubuntu-latest']), mkJob('bigmem', ['manual', 'ubuntu-latest'])]);
-  const first = engine.acquire('r1', ['ubuntu-latest', 'manual'], ['alice/*'], 'http://v');
+  const first = engine.acquire('r1', ['ubuntu-latest', 'manual'], ['alice/*'], 'http://v', null);
   assert.ok(first);
   assert.equal(first.address.job, 'build');
-  assert.equal(engine.acquire('r1', ['ubuntu-latest', 'manual'], ['alice/*'], 'http://v'), null);
+  assert.equal(engine.acquire('r1', ['ubuntu-latest', 'manual'], ['alice/*'], 'http://v', null), null);
   const load = engine.runnerLoad();
   assert.deepEqual(
     load.queued.map((q) => [q.job, q.manual]),

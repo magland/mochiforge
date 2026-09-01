@@ -21,6 +21,7 @@ import {
   secretNames,
   sourceRoot,
 } from './deploy-cli';
+import { MAX_JOB_TIMEOUT_MINUTES, isUsableJobTimeout } from './ci/runners';
 import { isValidName } from './scan';
 
 // `mochi deploy fly runner`: put a workflow runner on Fly.io, beside a
@@ -71,6 +72,7 @@ interface RunnerDeployArgs {
   name: string | null;
   allow: string[];
   labels: string[];
+  jobTimeout: number | null;
   region: string | null;
   volumeGb: number | null;
   vmSize: string | null;
@@ -92,6 +94,7 @@ function parseArgs(args: string[], usage: () => never): RunnerDeployArgs {
     name: null,
     allow: [],
     labels: [],
+    jobTimeout: null,
     region: null,
     volumeGb: null,
     vmSize: null,
@@ -113,6 +116,14 @@ function parseArgs(args: string[], usage: () => never): RunnerDeployArgs {
     else if (a === '--name') out.name = args[++i];
     else if (a === '--allow') out.allow.push(...list(args[++i] ?? ''));
     else if (a === '--labels' || a === '--label') out.labels.push(...list(args[++i] ?? ''));
+    else if (a === '--job-timeout') {
+      const raw = (args[++i] ?? '').trim();
+      const m = /^(\d+)\s*(m|h)?$/i.exec(raw);
+      if (!m) die('--job-timeout takes minutes, or a duration like 45m or 2h');
+      const n = parseInt(m![1], 10) * ((m![2] ?? 'm').toLowerCase() === 'h' ? 60 : 1);
+      if (!isUsableJobTimeout(n)) die(`--job-timeout takes 1 to ${MAX_JOB_TIMEOUT_MINUTES} minutes`);
+      out.jobTimeout = n;
+    }
     else if (a === '--region') out.region = args[++i];
     else if (a === '--volume') {
       const gb = parseInt(args[++i], 10);
@@ -519,6 +530,7 @@ export async function deployFlyRunnerCmd(args: string[], usage: () => never): Pr
       name,
       labels: a.labels.length ? a.labels : ['ubuntu-latest'],
       allow: a.allow,
+      ...(a.jobTimeout === null ? {} : { jobTimeoutMinutes: a.jobTimeout }),
       wakeUrl: wake.url,
       wakeSecret: wake.secret,
     });
@@ -529,6 +541,13 @@ export async function deployFlyRunnerCmd(args: string[], usage: () => never): Pr
     console.log('    a new one. Any other machine running as this runner will stop being able to.');
     const data = await api(target, 'POST', `/api/runners/${encodeURIComponent(name)}/token`, {});
     runnerToken = data.token as string;
+  }
+
+  // A timeout named by a flag applies to a runner that was already registered
+  // too, on the terms the rest of this command sets: a flag changes the thing
+  // it names, and a setting left unnamed keeps whatever the vault has.
+  if (a.jobTimeout !== null && registered) {
+    await api(target, 'PATCH', `/api/runners/${encodeURIComponent(name)}`, { jobTimeoutMinutes: a.jobTimeout });
   }
 
   // The wake address is rewritten on every deploy, not only on the first. The

@@ -9,6 +9,7 @@ import { ArtifactInfo } from './artifacts';
 import { DispatchableWorkflow } from './engine';
 import { isManualJob } from './manual';
 import { JobRecord, RunRecord, StepState } from './runs';
+import { DEFAULT_JOB_TIMEOUT_MINUTES, MAX_JOB_TIMEOUT_MINUTES } from './runners';
 
 // The Actions pages: the runs list, one run with its jobs and logs, and the
 // runner listing under Admin. Same conventions as the rest of the interface:
@@ -402,6 +403,11 @@ export interface RunnerView {
   createdBy: string;
   createdAt: string;
   tokenUpdatedAt?: string;
+  // The longest a job may run here, and whether that was set for this runner
+  // or is the vault's default. Both, because "20 minutes" and "20 minutes,
+  // which is simply the default" are different things to an operator.
+  jobTimeout: number;
+  jobTimeoutSet: boolean;
   // Where the runner is now, as far as the server can tell: when it last
   // spoke, and the job it holds a lease on. Both are in-memory facts, so a
   // runner that has not polled since the server started reads as absent.
@@ -411,6 +417,14 @@ export interface RunnerView {
   // when it has nothing to do. Null for the ordinary kind that is left
   // running, which is most of them.
   wakeUrl?: string | null;
+}
+
+/** Minutes as an operator reads them: 90 minutes is worth saying as 1h 30m. */
+function minutesLabel(minutes: number): string {
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m === 0 ? `${h} hour${h === 1 ? '' : 's'}` : `${h}h ${m}m`;
 }
 
 // A runner is either working on something, idle but in touch, or not there at
@@ -474,6 +488,12 @@ ${csrfField(viewer)}
 <p class="muted small">Matched against a job's <code>runs-on</code>. Space or comma separated.</p></div>
 <div class="field"><label for="allow">Repositories</label><input type="text" id="allow" name="allow" placeholder="mycollection/*" required>
 <p class="muted small">Globs over <code>collection/repo</code>. A runner executes whatever those repositories' workflows say, on the machine you start it on, so grant it only what you trust.</p></div>
+<div class="field"><label for="minutes">Job timeout</label><input type="number" id="minutes" name="minutes" min="1" max="${String(
+    MAX_JOB_TIMEOUT_MINUTES
+  )}" step="1" placeholder="${String(DEFAULT_JOB_TIMEOUT_MINUTES)}">
+<p class="muted small">Minutes a single job may run here, ${String(
+    DEFAULT_JOB_TIMEOUT_MINUTES
+  )} by default. A ceiling on what a job's own <code>timeout-minutes</code> may ask for, and changeable afterwards.</p></div>
 <button type="submit" class="btn btn-primary">Register runner</button>
 </form>
 </div>`;
@@ -504,6 +524,10 @@ ${fact(
     r.tokenUpdatedAt ? html`regenerated ${timeTag(r.tokenUpdatedAt, '')}` : html`the one issued at registration`
   )}
 ${fact(
+    'Job timeout',
+    html`${minutesLabel(r.jobTimeout)}${r.jobTimeoutSet ? '' : html` <span class="counter">default</span>`}`
+  )}
+${fact(
     'Wake',
     r.wakeUrl ? html`<span class="mono">${r.wakeUrl}</span>` : raw('<span class="muted">nothing starts this runner</span>')
   )}
@@ -527,6 +551,22 @@ ${copyRow(`mochi runner run --host ${host} --runner-token <token>`)}
         )
       : 'nothing yet'
   }.</p>
+</div>
+<div class="form-box wide" style="margin-top:24px">
+<h2>Job timeout</h2>
+<p class="muted">The longest a single job may run on ${r.name}. It is a ceiling, not a default: a job whose <code>timeout-minutes</code> asks for less keeps what it asked for, and one asking for more, or asking for nothing, is held to this. Reaching it removes the job's container, which fails the step that was running and the job with it.</p>
+<form method="post" action="/admin/runners/${encodeURIComponent(r.name)}/job-timeout">
+${csrfField(viewer)}
+<div class="field"><label for="jobTimeout">Minutes</label><input type="number" id="jobTimeout" name="minutes" min="1" max="${String(
+    MAX_JOB_TIMEOUT_MINUTES
+  )}" step="1" value="${r.jobTimeoutSet ? String(r.jobTimeout) : ''}" placeholder="${String(
+    DEFAULT_JOB_TIMEOUT_MINUTES
+  )}">
+<p class="muted small">Empty means the vault's default of ${String(
+    DEFAULT_JOB_TIMEOUT_MINUTES
+  )} minutes. A change applies to the next job this runner takes; one already running keeps the timeout it started with.</p></div>
+<button type="submit" class="btn">${icon('clock')}<span>Save job timeout</span></button>
+</form>
 </div>
 <div class="form-box wide" style="margin-top:24px">
 <h2>Wake address</h2>

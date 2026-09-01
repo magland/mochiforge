@@ -38,7 +38,14 @@ import {
   deployFlyRunnerShowCmd,
 } from './deploy-runner-cli';
 import { jobRunCmd } from './job-cli';
-import { runnerAddCmd, runnerListCommand, runnerRemoveCmd, runnerRunCmd, runnerWakeCmd } from './runner-cli';
+import {
+  runnerAddCmd,
+  runnerEditCmd,
+  runnerListCommand,
+  runnerRemoveCmd,
+  runnerRunCmd,
+  runnerWakeCmd,
+} from './runner-cli';
 import { seedTrustProxy } from './config';
 import { isValidUserName } from './scan';
 import { DEFAULT_THEME, themeNames } from './themes';
@@ -719,7 +726,8 @@ See also: mochi deploy fly show <app>, mochi deploy fly destroy <app>.
     ['deploy', 'fly', 'runner'],
     'Put a workflow runner on Fly.io, which stops when idle',
     `Usage: mochi deploy fly runner <app> [--allow <glob>...] [--labels <l,...>]
-                                   [--idle <5m>] [--region <r>] [--volume <gb>]
+                                   [--job-timeout <45m>] [--idle <5m>]
+                                   [--region <r>] [--volume <gb>]
                                    [--vm-size <s>] [--vm-memory <m>] [--org <o>]
                                    [--image <ref> | --from-source [--local-build]]
                                    [--image-only]
@@ -737,6 +745,10 @@ it costs while stopped is the volume alone.
 --allow is required the first time and says which repositories this runner may
 take jobs for; it executes whatever their workflows contain, on this machine.
 Run the same command again to deploy a new version.
+
+--job-timeout is the longest a single job may run on the machine, 20 minutes by
+default, which on hardware billed by the minute is the bound worth setting: it
+caps what a workflow's own timeout-minutes may ask for.
 
 --image-only moves an already-deployed runner to a new image and touches
 nothing else: no registration, no token, no wake rewrite, so it needs flyctl
@@ -770,12 +782,32 @@ See also: mochi deploy fly runner show <app>, destroy <app>, mochi runner list.
   raw(
     ['runner', 'add'],
     'Register a machine that will execute workflow jobs',
-    `Usage: mochi runner add <name> --allow <glob>... [--labels <l,...>] [--save]
+    `Usage: mochi runner add <name> --allow <glob>... [--labels <l,...>]
+                        [--job-timeout <45m>] [--save]
 
 Prints its token once. --allow says which repositories it may take jobs for, as
 globs over collection/repo; you must own every collection they name (a site admin may name any). Jobs never run on
-the vault's machine, so a vault with no runner queues its runs and waits.`,
+the vault's machine, so a vault with no runner queues its runs and waits.
+
+--job-timeout is the longest a single job may run on this machine, 20 minutes by
+default and stated in minutes or as a duration like 2h. It is a ceiling on what
+a job's own timeout-minutes may ask for, not a default it can override; change
+it later with mochi runner edit.`,
     runnerAddCmd
+  ),
+  raw(
+    ['runner', 'edit'],
+    "Change a registered runner's job timeout",
+    `Usage: mochi runner edit <name> --job-timeout <45m|default>
+
+The longest a single job may run on that machine. A job asking for less with
+timeout-minutes keeps what it asked for; one asking for more, or asking for
+nothing, is held to this. --job-timeout default puts the runner back on the
+vault's own default of 20 minutes.
+
+Applies to the next job the runner takes: one already running keeps the timeout
+it was handed with the job.`,
+    runnerEditCmd
   ),
   raw(
     ['runner', 'run'],

@@ -14,14 +14,19 @@ import { MANUAL_LABEL, looksLikeSessionToken, sessionRunnerName } from './manual
 import { LogLine } from './protocol';
 import { Conclusion, StepState } from './runs';
 import {
+  DEFAULT_JOB_TIMEOUT_MINUTES,
+  MAX_JOB_TIMEOUT_MINUTES,
   RunnerAuth,
   authenticateRunner,
+  isUsableJobTimeout,
   loadRunners,
   noteRunnerSeen,
   regenerateRunnerToken,
   registerRunner,
   removeRunner,
+  runnerJobTimeout,
   runnerLastSeen,
+  setRunnerJobTimeout,
   setRunnerWake,
 } from './runners';
 import { sendWake, wakeOf } from './wake';
@@ -157,6 +162,11 @@ export function registerCiApi(app: Express, root: string, engine: CiEngine, auth
         allow: r.allow,
         createdBy: r.createdBy,
         createdAt: r.createdAt,
+        // What was set and what is in force, the two differing for a runner
+        // left on the default: a caller wanting to know how long a job may run
+        // there should not have to know what the default is.
+        jobTimeoutMinutes: r.jobTimeoutMinutes ?? null,
+        jobTimeout: runnerJobTimeout(r),
         // Registration says what a runner may do; these two say whether it is
         // there at all and what it is doing, which is what a caller looking at
         // a run that has not started actually wants to know.
@@ -249,13 +259,26 @@ export function registerCiApi(app: Express, root: string, engine: CiEngine, auth
       apiError(res, 400, wake.error);
       return;
     }
+    const timeout = jobTimeoutFrom(body);
+    if ('error' in timeout) {
+      apiError(res, 400, timeout.error);
+      return;
+    }
     const { token, runner } = registerRunner(root, name, {
       labels: labels.length ? labels : ['ubuntu-latest'],
       allow,
       createdBy: auth.username,
+      jobTimeoutMinutes: timeout.minutes,
       wake: wake.wake,
     });
-    res.json({ name, token, labels: runner.labels, allow: runner.allow, wakeUrl: runner.wakeUrl ?? null });
+    res.json({
+      name,
+      token,
+      labels: runner.labels,
+      allow: runner.allow,
+      jobTimeout: runnerJobTimeout(runner),
+      wakeUrl: runner.wakeUrl ?? null,
+    });
   });
 
   /**
@@ -286,6 +309,74 @@ export function registerCiApi(app: Express, root: string, engine: CiEngine, auth
       return;
     }
     res.json({ name, token: issued.token, labels: issued.runner.labels, allow: issued.runner.allow });
+  });
+
+  /**
+   * The job timeout in a request body, or a message saying what is wrong.
+   *
+   * Absent and null both read as the default, which is what registration
+   * wants; the PATCH route below tells the two apart itself, because there an
+   * absent field is a caller who asked for nothing. A value that is not a
+   * usable number of minutes is refused rather than rounded: an operator who
+   * typed 0 meant something, and it was not "no limit".
+   */
+  function jobTimeoutFrom(
+    body: Record<string, unknown>
+  ): { minutes: number | null } | { minutes?: undefined; error: string } {
+    const v = body.jobTimeoutMinutes;
+    if (v === undefined) return { minutes: null };
+    if (v === null) return { minutes: null };
+    if (typeof v !== 'number' || !isUsableJobTimeout(v)) {
+      return {
+        error: `"jobTimeoutMinutes" must be a whole number of minutes from 1 to ${MAX_JOB_TIMEOUT_MINUTES}, or null for the default of ${DEFAULT_JOB_TIMEOUT_MINUTES}`,
+      };
+    }
+    return { minutes: v };
+  }
+
+  /**
+   * The longest a job may run on this runner. A ceiling rather than a default:
+   * a job's own `timeout-minutes` applies when it asks for less, and is cut
+   * down to this when it asks for more or asks for nothing.
+   *
+   * A change applies to the next job the runner takes, not to one already
+   * running: the runner enforces the timeout it was handed with the job, and
+   * reaching into a job in flight to shorten it would be a cancellation
+   * wearing a setting's clothes.
+   */
+  app.patch('/api/runners/:name', json, (req, res) => {
+    const auth = requireAdmin(req, res);
+    if (!auth) return;
+    const name = req.params.name;
+    const existing = loadRunners(root).runners[name];
+    if (!existing) {
+      apiError(res, 404, `no runner named ${name}`);
+      return;
+    }
+    if (!canAdminRunnerGlobs(root, auth, existing.allow)) {
+      apiError(res, 403, 'you must own every collection this runner serves; a site admin may manage any runner');
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (body.jobTimeoutMinutes === undefined) {
+      apiError(res, 400, 'nothing to change; provide "jobTimeoutMinutes"');
+      return;
+    }
+    const timeout = jobTimeoutFrom(body);
+    if ('error' in timeout) {
+      apiError(res, 400, timeout.error);
+      return;
+    }
+    const runner = setRunnerJobTimeout(root, name, timeout.minutes);
+    if (!runner) {
+      apiError(res, 404, `no runner named ${name}`);
+      return;
+    }
+    res.json({
+      name,
+      jobTimeoutMinutes: runner.jobTimeoutMinutes ?? null,
+      jobTimeout: runnerJobTimeout(runner),
+    });
   });
 
   /**
@@ -404,6 +495,9 @@ export function registerCiApi(app: Express, root: string, engine: CiEngine, auth
       labels,
       auth.runner.allow,
       baseUrlOf(req),
+      // The registry decides how long a job may run on this machine, so the
+      // limit is read here rather than trusted from the runner's own request.
+      runnerJobTimeout(auth.runner),
       ACQUIRE_TIMEOUT_MS,
       gone.signal
     );
