@@ -4634,6 +4634,39 @@ jobs:
       - run: echo "page url is ${{ steps.deployment.outputs.page_url }}"
 YML
     push_ci "Add a site deployment workflow"
+
+    # A site is opt-in per repository, and deploy-pages writes the site
+    # directory only where the repository has said a workflow may: with the
+    # site off, and with it published by copied files, the deploy is refused
+    # rather than quietly overwriting what somebody maintains by hand. Both
+    # refusals are checked here, since this is the only place a real
+    # deploy-pages runs.
+    run_workflow deploy.yml Deploy
+    DEPLOY_OFF="$RUN_N"
+    [ "$(run_field "$RUNS/$DEPLOY_OFF/run.json" conclusion)" = "failure" ] || {
+      echo "FAIL: deploy-pages published to a site that is not enabled"
+      cat "$RUNS/$DEPLOY_OFF/jobs/deploy.log"; exit 1; }
+    grep -q "is not enabled" "$RUNS/$DEPLOY_OFF/jobs/deploy.log" || {
+      echo "FAIL: the refusal did not say the site is not enabled"
+      cat "$RUNS/$DEPLOY_OFF/jobs/deploy.log"; exit 1; }
+    PASS=$((PASS+1)); echo "ok: deploy-pages is refused while the repository's site is not enabled"
+    [ -f "$VAULT/collections/demo/repos/ci.site/index.html" ] && {
+      echo "FAIL: the refused deploy wrote the site directory anyway"; exit 1; }
+    PASS=$((PASS+1)); echo "ok: and wrote nothing"
+    api "enable the site, published by copied files" 200 -X PATCH -H "$JSON_CT" \
+      --data '{"siteEnabled":true,"siteSource":"copy"}' "$BASE/api/repos/demo/ci"
+    run_workflow deploy.yml Deploy
+    DEPLOY_COPY="$RUN_N"
+    [ "$(run_field "$RUNS/$DEPLOY_COPY/run.json" conclusion)" = "failure" ] || {
+      echo "FAIL: deploy-pages wrote a site published by copied files"
+      cat "$RUNS/$DEPLOY_COPY/jobs/deploy.log"; exit 1; }
+    grep -q "published by copying files" "$RUNS/$DEPLOY_COPY/jobs/deploy.log" || {
+      echo "FAIL: the refusal did not name the site source"
+      cat "$RUNS/$DEPLOY_COPY/jobs/deploy.log"; exit 1; }
+    PASS=$((PASS+1)); echo "ok: deploy-pages is refused on a site published by copied files"
+    api "publish it by workflow deploys instead" 200 -X PATCH -H "$JSON_CT" \
+      --data '{"siteSource":"actions"}' "$BASE/api/repos/demo/ci"
+
     run_workflow deploy.yml Deploy
     DEPLOY_RUN="$RUN_N"
     [ "$(run_field "$RUNS/$DEPLOY_RUN/run.json" conclusion)" = "success" ] || {
