@@ -5,11 +5,13 @@ import { test } from 'node:test';
 import { OpError, createCollection, deleteCollection } from '../src/ops';
 import { addCollectionOwner } from '../src/perms';
 import { loadRedirects, recordCollectionRename } from '../src/redirects';
+import { setCollectionAlias } from '../src/sitesettings';
 import { makeBareRepo, makeVaultDir, removeBareRepo } from './helpers';
 
 // Deleting a collection is allowed only when it is empty: no repository and
 // nothing a repository keeps beside it. The collection's own metadata is not
-// an obstacle - the owners file describes the collection and goes with it -
+// an obstacle - the owners file and the site alias describe the collection and
+// go with it -
 // but a file the server did not put there is, since deletion has no business
 // removing what it does not recognize.
 
@@ -28,6 +30,14 @@ test('the owners file goes with the collection rather than blocking it', () => {
   const root = makeVaultDir();
   createCollection(root, 'demo');
   addCollectionOwner(root, 'demo', 'alice');
+  deleteCollection(root, 'demo');
+  assert.ok(!fs.existsSync(collectionPath(root, 'demo')));
+});
+
+test('the site alias goes with the collection too', () => {
+  const root = makeVaultDir();
+  createCollection(root, 'demo');
+  setCollectionAlias(root, 'demo', 'demo-sites');
   deleteCollection(root, 'demo');
   assert.ok(!fs.existsSync(collectionPath(root, 'demo')));
 });

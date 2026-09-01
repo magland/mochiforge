@@ -7,9 +7,9 @@ import { markdownEditor, previewUrl } from './mdedit';
 import { MARK } from './logo';
 import { formatSize, timeTag } from './render';
 import { Viewer } from './session';
-import { siteHostFor } from './siteshost';
 import { Theme } from './themes';
 import { isSiteAdmin } from './perms';
+import { sanitizedSiteLabel } from './siteshost';
 import { GithubAccount, UserProfile, UserRecord, passkeyBinding, tokenId } from './vault';
 import {
   PageOpts,
@@ -412,8 +412,23 @@ ${csrfField(viewer)}
   return layout('New collection', content, { viewer, path: '/new/collection' });
 }
 
+/** What a collection's Site alias box shows; gathered by the route. */
+export interface CollectionSitesInfo {
+  /** The vault's sites host, '' when sites are served on the forge host. */
+  host: string;
+  /** The alias stored for this collection, '' when it has none of its own. */
+  stored: string;
+  /** The alias in effect, or null when the collection has none at all. */
+  alias: string | null;
+  /** The rewritten label the name wanted but cannot have, '' otherwise. */
+  taken: string;
+  /** The collection holding that label, '' when no single collection does. */
+  takenBy: string;
+}
+
 /**
- * A collection's own settings: its owners, its name, and its deletion.
+ * A collection's own settings: its owners, its site alias, its name, and its
+ * deletion.
  *
  * Repository settings live under the repository, so a collection's live under
  * the collection, at the same place in the path. The rename is graded amber
@@ -427,6 +442,7 @@ export function collectionSettingsPage(
   collection: string,
   repoCount: number,
   owners: string[],
+  sites: CollectionSitesInfo,
   msg?: string,
   error?: string
 ): string {
@@ -437,6 +453,40 @@ export function collectionSettingsPage(
       : `Every one of its ${
           repoCount === 1 ? 'repository' : `${repoCount} repositories`
         } moves with it, along with their sites, workflow runs, issues, pull requests, releases, and LFS objects.`;
+  // The alias only means anything on a vault with a sites host, so the box is
+  // absent without one rather than offering a setting with no effect.
+  const aliasState = sites.alias
+    ? html`Sites in this collection are served from <span class="mono">&lt;repo&gt;--${sites.alias}.${
+        sites.host
+      }</span>${
+        sites.stored
+          ? html`, under the alias set below.`
+          : sites.alias === collection
+            ? html`. That is the collection's own name, which is usable as a hostname label.`
+            : html`. That is the name rewritten as a hostname label, the name itself not being usable as one; no other collection holds that label, which is what makes it available here. An alias set below replaces it.`
+      }`
+    : sites.taken
+      ? html`This collection's name is not usable as a hostname label, and the label it would be rewritten to, <span class="mono">${
+          sites.taken
+        }</span>, ${
+          sites.takenBy
+            ? html`belongs to the collection <a href="/${sites.takenBy}">${sites.takenBy}</a>`
+            : html`is one another collection's name rewrites to as well, so it belongs to neither`
+        }. Until an alias is set here, nothing in this collection has a derived hostname, and its sites are served on the forge host, sandboxed, unless a repository claims a label of its own.`
+      : html`This collection's name is not usable as a hostname label, so nothing in it has a derived hostname until an alias is set here; its sites are served on the forge host, sandboxed, unless a repository claims a label of its own.`;
+  const sitesBox = sites.host
+    ? html`<div class="box settings-box" id="site"><div class="box-header">${icon('globe')}Site alias</div><div class="box-body">
+<p>${aliasState}</p>
+<form method="post" action="${base}/settings/site">
+${csrfField(viewer)}
+<div class="field"><label for="siteAlias">Hostname label</label><input type="text" id="siteAlias" name="alias" value="${
+        sites.stored
+      }" placeholder="${sites.alias ?? sanitizedSiteLabel(collection)}" autocomplete="off" spellcheck="false">
+<p class="muted small">The label standing in for <span class="mono">${collection}</span> in each of its repositories' hostnames: lowercase letters, digits, and single interior hyphens, and never a doubled hyphen. Empty means the collection's own name where that is usable as a label, and otherwise its name rewritten as one. Changing it moves every site in the collection to a new origin; the old hostnames stop resolving rather than redirecting, since the alias they carry then names no collection.</p></div>
+<button type="submit" class="btn btn-primary">${icon('check')}<span>Save</span></button>
+</form>
+</div></div>`
+    : '';
   const content = html`<div class="page-head"><h1 class="with-avatar">${avatar(
     collection,
     28,
@@ -467,6 +517,7 @@ ${csrfField(viewer)}
 <button type="submit" class="btn">${icon('people')}<span>Add owner</span></button>
 </form>
 </div></div>
+${sitesBox}
 <div class="danger-zone caution">
 <h3>Rename</h3>
 <p>${holds} The old address is redirected here, so links and existing clones keep working until something else is created under that name, but token scopes naming the old collection have to be granted again under the new name.</p>
@@ -747,6 +798,15 @@ export interface SettingsSiteInfo {
   domain: string | null;
   /** The vault's sites host, '' when sites are served on the forge host. */
   sitesHost: string;
+  /**
+   * The derived `<repo>--<alias>` label this repository would be served under,
+   * or null when it has none: the repository's name may not be usable as a
+   * hostname label, or its collection may have no site alias. Resolved by the
+   * route, since the alias is a question about the vault's collections.
+   */
+  derivedLabel: string | null;
+  /** The collection's site alias, or null when it has none. */
+  collectionAlias: string | null;
   /** Whether the <repo>.site directory exists on disk. */
   dirExists: boolean;
 }
@@ -858,8 +918,7 @@ ${csrfField(ctx.viewer!)}
   // The site: whether the sibling directory is published, how it is written,
   // and at which hostname. Admin only, like visibility, because enabling a
   // site publishes whatever the directory holds to everyone.
-  const derivedHost = site.sitesHost ? siteHostFor(site.sitesHost, ctx.collection, ctx.repo) : null;
-  const derivedLabel = derivedHost ? derivedHost.slice(0, -(site.sitesHost.length + 1)) : null;
+  const derivedLabel = site.derivedLabel;
   const siteStatus = site.enabled
     ? site.dirExists
       ? html`This repository's site is <b>enabled</b>, served at <a href="${ctx.siteUrl}">${ctx.siteUrl}</a>.`
@@ -882,7 +941,9 @@ ${csrfField(ctx.viewer!)}
     ? html`<div class="field"><label for="siteLabel">Hostname label</label><input type="text" id="siteLabel" name="label" value="${site.label}" placeholder="${derivedLabel ?? ''}"><p class="muted small">The label under <span class="mono">${site.sitesHost}</span> the site is served from: lowercase letters, digits, and single interior hyphens. ${
         derivedLabel
           ? html`Empty means the default, <span class="mono">${derivedLabel}</span>.`
-          : html`This repository's names are not usable as a hostname label, so without one the site is served on the forge host, sandboxed.`
+          : site.collectionAlias === null
+            ? html`The collection <span class="mono">${ctx.collection}</span> has no site alias, so nothing in it has a derived hostname; an owner can give it one in the <a href="/${ctx.collection}/settings">collection's settings</a>. Without a label here the site is served on the forge host, sandboxed.`
+            : html`This repository's name is not usable as a hostname label, so without one the site is served on the forge host, sandboxed.`
       }</p></div>`
     : '';
   const siteConfigForm = site.enabled
@@ -1426,6 +1487,18 @@ ${csrfField(viewer)}
 export interface VaultSettingsInfo {
   /** The vault's sites host, '' when sites are served sandboxed on the forge host. */
   sitesHost: string;
+  /**
+   * What is already named under the sites host, or null when there is no sites
+   * host to name anything under. Read-only on this page: a label is claimed on
+   * a repository's settings page and an alias on a collection's. It is here so
+   * that the flat namespace of claimed labels can be read at all, rather than
+   * discovered one refused claim at a time.
+   */
+  names: {
+    labels: { label: string; collection: string; repo: string }[];
+    collections: { collection: string; alias: string | null; stored: boolean; taken: string }[];
+    reserved: string[];
+  } | null;
   ci: { runs: number; days: number; artifactMb: number };
   trustProxy: boolean;
   limits: {
@@ -1496,6 +1569,52 @@ export function vaultSettingsPage(
       min
     )}" step="1" value="${String(value)}">${blurb === '' ? '' : html`<p class="muted small">${blurb}</p>`}</div>`;
 
+  // Who holds what under the sites host: the labels repositories have claimed,
+  // which are one flat vault-wide namespace, and each collection's alias, which
+  // stands in for its name in every derived hostname. Neither is editable here;
+  // this is the one place both can be read at once.
+  const names = info.names;
+  const labelRows = (names?.labels ?? []).map(
+    ({ label, collection, repo }) => html`<tr><td class="mono">${label}.${info.sitesHost}</td><td><a href="/${
+      collection
+    }/${repo}/settings#site">${collection}/${repo}</a></td></tr>`
+  );
+  const aliasRows = (names?.collections ?? []).map(
+    ({ collection, alias, stored, taken }) => html`<tr><td class="mono">${
+      alias ? html`&lt;repo&gt;--${alias}.${info.sitesHost}` : html`<span class="muted">none</span>`
+    }</td><td><a href="/${collection}/settings#site">${collection}</a>${
+      stored
+        ? raw(' <span class="counter">set</span>')
+        : taken
+          ? html` <span class="muted small">(<span class="mono">${taken}</span> is taken)</span>`
+          : ''
+    }</td></tr>`
+  );
+  const namesUnderHost = names
+    ? html`<hr class="rule">
+<h3>Claimed labels</h3>
+${
+        labelRows.length
+          ? html`<table class="listing"><tbody><tr><th>Hostname</th><th>Repository</th></tr>${labelRows}</tbody></table>`
+          : html`<p class="muted">No repository has claimed a label; every site is served under its derived hostname.</p>`
+      }
+<p class="muted small">A label is a single name under the sites host, claimed by a repository's admin in its own settings, and one repository at a time holds it. These labels cannot collide with a derived hostname, which always carries a doubled hyphen. ${
+        names.reserved.length
+          ? html`Reserved, so no repository may claim them: ${joinHtml(
+              names.reserved.map((r) => html`<span class="mono">${r}</span>`),
+              ', '
+            )}.`
+          : ''
+      }</p>
+<h3>Collection aliases</h3>
+${
+        aliasRows.length
+          ? html`<table class="listing"><tbody><tr><th>Derived hostname</th><th>Collection</th></tr>${aliasRows}</tbody></table>`
+          : html`<p class="muted">No collections yet.</p>`
+      }
+<p class="muted small">The alias stands in for a collection's name in each of its repositories' derived hostnames. Without one stored, it is the collection's own name where that is usable as a hostname label, and otherwise the name rewritten as one; a rewritten label that another collection already holds is left unused, and an owner resolves it by storing an alias in the collection's settings. A collection with no alias has no derived hostnames, and its sites stay on the forge host unless each repository claims a label.</p>`
+    : '';
+
   const sitesBox = html`<div class="box settings-box" id="sites"><div class="box-header">${icon(
     'globe'
   )}Sites hostname</div><div class="box-body">
@@ -1510,9 +1629,10 @@ ${csrfField(viewer)}
 <div class="field"><label for="sitesHost">Sites host</label><input type="text" id="sitesHost" name="host" value="${
     info.sitesHost
   }" placeholder="vault-sites.example.org" autocomplete="off" spellcheck="false">
-<p class="muted small">Subdomains of this hostname serve each eligible repository's site, at <span class="mono">&lt;repo&gt;--&lt;collection&gt;.&lt;host&gt;</span> or the label the repository chose, in place of the sandbox on the forge host. Set it only once the wildcard resolves to this vault and a certificate covers it, since sites stop being served anywhere else the moment it is saved. It is read per request, so a save is in effect immediately; empty puts sites back on the forge host, equally immediately.</p></div>
+<p class="muted small">Subdomains of this hostname serve each eligible repository's site, at <span class="mono">&lt;repo&gt;--&lt;alias&gt;.&lt;host&gt;</span> or the label the repository chose, in place of the sandbox on the forge host. Set it only once the wildcard resolves to this vault and a certificate covers it, since sites stop being served anywhere else the moment it is saved. It is read per request, so a save is in effect immediately; empty puts sites back on the forge host, equally immediately.</p></div>
 <button type="submit" class="btn btn-primary">${icon('check')}<span>Save</span></button>
 </form>
+${namesUnderHost}
 </div></div>`;
 
   const ciBox = html`<div class="box settings-box" id="ci"><div class="box-header">${icon(

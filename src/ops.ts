@@ -15,6 +15,7 @@ import {
 } from './git';
 import type { LfsStore } from './lfsstore';
 import { COLLECTION_FILE, addCollectionOwner, repoIsPrivate, setRepoPrivate } from './perms';
+import { COLLECTION_SITE_FILE } from './sitesettings';
 import { loadVault } from './vault';
 import { looksLikePointer } from './pointer';
 import { parseUpstream } from './source';
@@ -1083,10 +1084,11 @@ export async function renameCollection(
  * no longer wanted, not a way to remove many repositories at once, so a
  * collection holding any repository - or anything a repository keeps beside
  * it - is refused rather than emptied. The collection's own metadata
- * (collection.json, the owners file) does not count against emptiness: it
- * describes the collection and goes with it, as a repository's issues go with
- * the repository. A file this layer does not recognize is refused rather than
- * deleted, since it is not the collection's to lose.
+ * (collection.json, the owners file, and site.json, its site alias) does not
+ * count against emptiness: it describes the collection and goes with it, as a
+ * repository's issues go with the repository. A file this layer does not
+ * recognize is refused rather than deleted, since it is not the collection's
+ * to lose.
  */
 export function deleteCollection(root: string, name: string): void {
   if (!isValidName(name)) throw new OpError('invalid collection name');
@@ -1105,7 +1107,9 @@ export function deleteCollection(root: string, name: string): void {
   const repos = reposDir(root, name);
   const inRepos = fs.existsSync(repos) ? fs.readdirSync(repos) : [];
   if (inRepos.length > 0) throw new OpError(`collection ${name} is not empty`, 'conflict');
-  const own = fs.readdirSync(dir).filter((n) => n !== REPOS_DIR && n !== COLLECTION_FILE);
+  const own = fs
+    .readdirSync(dir)
+    .filter((n) => n !== REPOS_DIR && n !== COLLECTION_FILE && n !== COLLECTION_SITE_FILE);
   if (own.length > 0) {
     throw new OpError(`collection ${name} holds ${own[0]}, which this server did not put there; refusing to delete it`, 'conflict');
   }

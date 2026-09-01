@@ -6,8 +6,7 @@ import { loadConfig } from './config';
 import { domainRepoFor, isSiteRequest } from './domains';
 import { resolveRepoRedirect } from './redirects';
 import { findRepo, isValidName } from './scan';
-import { findRepoBySiteLabel } from './sitesettings';
-import { parseSiteHost, siteHostLabel } from './siteshost';
+import { findRepoBySiteHostname } from './sitesettings';
 
 // Outgoing bytes, counted and capped.
 //
@@ -306,19 +305,14 @@ function normalizeKeys(root: string, keys: Record<string, number>): Record<strin
 
 /**
  * The repository a site hostname names, or null for a hostname that serves no
- * site: a derived <repo>--<collection> label, a custom label some repository
- * claimed, or a custom domain out of domains.json. The label scan only runs
- * for a hostname that is under the sites host and is not a derived name, so
- * ordinary traffic never pays for it.
+ * site: a custom domain out of domains.json, or a name under the sites host,
+ * resolved exactly as the site handler resolves it so that a request's bytes
+ * are attributed to whatever answered it.
  */
 function siteHostRepo(root: string, hostname: string): { collection: string; repo: string } | null {
   const domain = domainRepoFor(root, hostname);
   if (domain) return domain;
-  const sitesHost = loadConfig(root).sites.host;
-  const named = parseSiteHost(sitesHost, hostname);
-  if (named) return named;
-  const label = siteHostLabel(sitesHost, hostname);
-  return label !== null && !label.includes('--') ? findRepoBySiteLabel(root, label) : null;
+  return findRepoBySiteHostname(root, loadConfig(root).sites.host, hostname);
 }
 
 /**

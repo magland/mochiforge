@@ -43,6 +43,7 @@ import {
 import { clearRepoDomain, repoDomain, setRepoDomain } from '../domains';
 import { findRepo, isValidName, reservedRepoSuffix, upstreamOf } from '../scan';
 import { editSiteSettings, isUsableSiteLabel, siteLabelConflict, siteSettings } from '../sitesettings';
+import { isReservedSiteLabel } from '../siteshost';
 import { repoTopics, setTopics } from '../topics';
 import { loadVault } from '../vault';
 import {
@@ -477,6 +478,10 @@ export function registerWriteApi(
       return;
     }
     const siteLabel = stringField(body, 'siteLabel');
+    if (siteLabel !== null && siteLabel !== '' && isReservedSiteLabel(siteLabel)) {
+      apiError(res, 409, `the label ${siteLabel} is reserved for the operator of this vault`);
+      return;
+    }
     if (siteLabel !== null && siteLabel !== '' && !isUsableSiteLabel(siteLabel)) {
       apiError(
         res,

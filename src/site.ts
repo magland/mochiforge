@@ -7,8 +7,8 @@ import { containedIn } from './ops';
 import { resolveRepoRedirect } from './redirects';
 import { esc } from './render';
 import { findRepo, siteDir } from './scan';
-import { findRepoBySiteLabel, siteSettings } from './sitesettings';
-import { isUnderSitesHost, normalizeHostname, parseSiteHost, siteHostFor, siteHostLabel } from './siteshost';
+import { findRepoBySiteHostname, siteHostFor, siteSettings } from './sitesettings';
+import { isUnderSitesHost, normalizeHostname } from './siteshost';
 import { send404, wildcard } from './web';
 
 // Serving a repository's static site. This is the only place in mochi where
@@ -206,9 +206,9 @@ function minimalPage(status: number, title: string, body: string): string {
 /**
  * The one hostname a repository's site answers on, or null when it is served
  * on the forge host. Precedence is custom domain, then custom label on the
- * sites host, then the derived <repo>--<collection> label; every other
- * hostname that reaches the same site 301s here, so published links converge
- * on one origin the way they do for a rename.
+ * sites host, then the derived <repo>--<alias> label; every other hostname
+ * that reaches the same site 301s here, so published links converge on one
+ * origin the way they do for a rename.
  */
 function canonicalSiteHostname(root: string, collection: string, repo: string, repoDir: string): string | null {
   const domain = repoDomain(root, collection, repo);
@@ -217,7 +217,7 @@ function canonicalSiteHostname(root: string, collection: string, repo: string, r
   if (!sitesHost) return null;
   const label = siteSettings(repoDir).label;
   if (label) return `${label}.${sitesHost}`;
-  return siteHostFor(sitesHost, collection, repo);
+  return siteHostFor(root, sitesHost, collection, repo);
 }
 
 /**
@@ -231,7 +231,7 @@ export function siteHostUrl(root: string, req: Request, collection: string, repo
   const found = findRepo(root, collection, repo);
   const host = found
     ? canonicalSiteHostname(root, found.collection, found.name, found.dir)
-    : siteHostFor(loadConfig(root).sites.host, collection, repo);
+    : siteHostFor(root, loadConfig(root).sites.host, collection, repo);
   return host ? `${req.protocol}://${host}` : null;
 }
 
@@ -277,17 +277,9 @@ export function registerSiteHost(app: Express, root: string): void {
       return;
     }
     // What the hostname names: the mapped repository for a custom domain, and
-    // under the sites host either a derived <repo>--<collection> label or a
-    // custom label some repository claimed. The two label kinds cannot
-    // collide, since a derived label always contains `--` and a custom one
-    // never may.
-    let named = viaDomain;
-    if (!named) {
-      const label = siteHostLabel(sitesHost, req.hostname);
-      if (label !== null) {
-        named = label.includes('--') ? parseSiteHost(sitesHost, req.hostname) : findRepoBySiteLabel(root, label);
-      }
-    }
+    // otherwise whatever the name under the sites host resolves to, which is
+    // findRepoBySiteHostname's business rather than this handler's.
+    const named = viaDomain ?? findRepoBySiteHostname(root, sitesHost, req.hostname);
     if (!named) {
       // A request to the bare sites host, to a deeper name under it, or to a
       // label nothing answers to gets a minimal 404 rather than falling

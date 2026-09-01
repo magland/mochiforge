@@ -2,9 +2,16 @@ import { displayName } from './scan';
 
 // The grammar of a per-site hostname, in both directions, so that the parser
 // and the link builder cannot drift apart. A site served from
-// <repo>--<collection>.<sitesHost> has an origin of its own, which is what gives
+// <repo>--<alias>.<sitesHost> has an origin of its own, which is what gives
 // it back the cookies, storage, and service workers that the sandbox on the
 // forge host takes away.
+//
+// The `alias` half is the collection's site alias rather than its name: a
+// collection may be called something no hostname label can be, and resolving
+// the two is a question about the vault's collections, which this file cannot
+// see. Everything here is a pure function of the strings it is given, so the
+// grammar stays testable and cheap; src/sitesettings.ts holds the half that
+// reads the vault.
 
 /**
  * Whether a collection or repository name may appear in a site hostname. The
@@ -16,8 +23,71 @@ export function isSiteLabelSafe(name: string): boolean {
   return /^[a-z0-9]+(-[a-z0-9]+)*$/.test(name);
 }
 
-/** The DNS limit on one label, which <repo>--<collection> has to fit inside. */
-const MAX_LABEL = 63;
+/** The DNS limit on one label, which <repo>--<alias> has to fit inside. */
+export const MAX_SITE_LABEL = 63;
+
+/**
+ * Labels under the sites host that no repository may claim.
+ *
+ * The sites host is a name the operator will want to use for other things:
+ * `www` for a landing page, `api` for something in front of the vault, the
+ * mail and nameserver names a registrar's defaults create. A repository that
+ * had claimed one of those would quietly own it, and taking it back would mean
+ * finding the repository holding it. Reserving them is the cheap direction.
+ *
+ * The set applies only to the labels a repository claims for itself, not to a
+ * collection's site alias: an alias appears in a hostname only after
+ * `<repo>--`, where it can shadow nothing. Note that `xn--anything` needs no
+ * reserving, since a claimed label may not contain a double hyphen at all.
+ */
+const RESERVED_SITE_LABELS = new Set([
+  'admin',
+  'api',
+  'assets',
+  'cdn',
+  'forge',
+  'git',
+  'localhost',
+  'mail',
+  'ns1',
+  'ns2',
+  'sites',
+  'smtp',
+  'static',
+  'vault',
+  'www',
+]);
+
+/** Whether a label is one the operator keeps, so no repository may claim it. */
+export function isReservedSiteLabel(label: string): boolean {
+  return RESERVED_SITE_LABELS.has(label);
+}
+
+/** The reserved labels, sorted, for the settings page to name them. */
+export function reservedSiteLabels(): string[] {
+  return [...RESERVED_SITE_LABELS].sort();
+}
+
+/**
+ * A name rewritten as a hostname label, or '' when nothing usable is left.
+ *
+ * Every run of characters a label may not contain becomes a single hyphen and
+ * the ends are trimmed, so `Simulated_Instruments` becomes
+ * `simulated-instruments`. Collapsing the runs is what keeps a double hyphen
+ * out of the result, which the `<repo>--<alias>` grammar depends on.
+ *
+ * The rewrite is not injective: `a_b` and `a.b` both come out as `a-b`. It is
+ * therefore only ever used as a fallback that is dropped when two collections
+ * would land on the same label; see collectionSiteAliases in
+ * src/sitesettings.ts.
+ */
+export function sanitizedSiteLabel(name: string): string {
+  const label = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return isSiteLabelSafe(label) && label.length <= MAX_SITE_LABEL ? label : '';
+}
 
 /**
  * The one normalization a hostname gets, wherever one is read. Exported because
@@ -30,21 +100,25 @@ export function normalizeHostname(hostname: string): string {
 }
 
 /**
- * The full hostname for a repository's site, or null if it is not eligible.
+ * The full hostname for a repository's site under a collection's site alias, or
+ * null if the pair is not eligible.
  *
- * Repository and collection names are more permissive than a hostname label
- * (isValidName allows '.', '_', and uppercase), so not every repository is
- * eligible, and an ineligible one keeps being served on the forge host. Refusing
- * rather than mangling is deliberate: lowercasing `Webapp1` would collide with a
- * `webapp1` beside it, since hostnames are case-insensitive and both names are
- * legal on disk.
+ * Repository names are more permissive than a hostname label (isValidName
+ * allows '.', '_', and uppercase), so not every repository is eligible, and an
+ * ineligible one keeps being served on the forge host unless its admin claims a
+ * label that is usable. Refusing rather than mangling is deliberate here:
+ * lowercasing `Webapp1` would collide with a `webapp1` beside it, since
+ * hostnames are case-insensitive and both names are legal on disk. A
+ * collection's alias is where the mangling is done instead, because it can be
+ * checked against every other collection first, which a repository name inside
+ * one collection cannot be.
  */
-export function siteHostFor(sitesHost: string, collection: string, repo: string): string | null {
+export function derivedSiteHost(sitesHost: string, collectionAlias: string, repo: string): string | null {
   if (!sitesHost) return null;
   const name = displayName(repo);
-  if (!isSiteLabelSafe(name) || !isSiteLabelSafe(collection)) return null;
-  const label = `${name}--${collection}`;
-  if (label.length > MAX_LABEL) return null;
+  if (!isSiteLabelSafe(name) || !isSiteLabelSafe(collectionAlias)) return null;
+  const label = `${name}--${collectionAlias}`;
+  if (label.length > MAX_SITE_LABEL) return null;
   return `${label}.${sitesHost}`;
 }
 
@@ -53,8 +127,8 @@ export function siteHostFor(sitesHost: string, collection: string, repo: string)
  * hostname elsewhere, for the bare sites host, and for a deeper name such as
  * a.b.<sitesHost>, which is refused and is not covered by a single wildcard
  * certificate anyway. What the label means is the caller's question: one
- * containing `--` is a derived <repo>--<collection> name for parseSiteHost
- * below, and one without is a custom label a repository may have claimed.
+ * containing `--` is a derived <repo>--<alias> name for parseSiteHost below,
+ * and one without is a custom label a repository may have claimed.
  */
 export function siteHostLabel(sitesHost: string, hostname: string): string | null {
   if (!sitesHost) return null;
@@ -67,22 +141,26 @@ export function siteHostLabel(sitesHost: string, hostname: string): string | nul
 }
 
 /**
- * The collection and repository a request's hostname names, or null.
+ * The collection alias and repository a request's hostname names, or null.
  *
  * The double hyphen is an unambiguous separator precisely because neither half
- * may contain one, so `a--b` in collection `c` cannot be confused with `a` in
- * collection `b--c`. It also means no label can begin `xn--`, which a browser
- * would read as punycode. No filesystem access happens here; the caller resolves
- * the names with findRepo as usual.
+ * may contain one, so `a--b` under alias `c` cannot be confused with `a` under
+ * alias `b--c`. It also means no label can begin `xn--`, which a browser would
+ * read as punycode. No filesystem access happens here: the alias is turned into
+ * a collection by collectionForSiteAlias, and the repository resolved with
+ * findRepo, as usual.
  */
-export function parseSiteHost(sitesHost: string, hostname: string): { collection: string; repo: string } | null {
+export function parseSiteHost(
+  sitesHost: string,
+  hostname: string
+): { collectionAlias: string; repo: string } | null {
   const label = siteHostLabel(sitesHost, hostname);
   if (label === null) return null;
   const parts = label.split('--');
   if (parts.length !== 2) return null;
-  const [repo, collection] = parts;
-  if (!isSiteLabelSafe(repo) || !isSiteLabelSafe(collection)) return null;
-  return { collection, repo };
+  const [repo, collectionAlias] = parts;
+  if (!isSiteLabelSafe(repo) || !isSiteLabelSafe(collectionAlias)) return null;
+  return { collectionAlias, repo };
 }
 
 /**

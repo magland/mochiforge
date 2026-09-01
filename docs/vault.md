@@ -16,6 +16,7 @@ A vault is a plain directory. Its collections are in `collections/`, and a colle
   collections/
     alice/
       collection.json           (the collection's explicit owners; created when one is added)
+      site.json                 (its site alias; created when an owner sets one)
       repos/
         .mochi.git/         (the collection's profile README; see below)
         hello-numerics.git/     (bare repository)
@@ -159,7 +160,7 @@ HTTP/1.1 301 Moved Permanently
 Location: /demo/renamed
 ```
 
-The path under the name is carried across untouched, so `/demo/proj/blob/main/README.md` becomes `/demo/renamed/blob/main/README.md`, and a clone of the old URL follows the redirect and records the new one. Renaming a collection redirects every address under it, the collection page and each repository in it alike. When a sites hostname is configured, a site's own hostname is redirected too: `proj--demo.<sites host>` sends visitors to `renamed--demo.<sites host>`.
+The path under the name is carried across untouched, so `/demo/proj/blob/main/README.md` becomes `/demo/renamed/blob/main/README.md`, and a clone of the old URL follows the redirect and records the new one. Renaming a collection redirects every address under it, the collection page and each repository in it alike. When a sites hostname is configured, a site's own hostname is redirected too: `proj--demo.<sites host>` sends visitors to `renamed--demo.<sites host>`. Renaming a collection redirects its sites' hostnames on the same terms, since the name is what the derived hostname carries unless the collection has a [site alias](sites.md#collection-aliases) of its own; changing that alias moves the hostnames without redirecting them.
 
 A push follows the redirect too, so a clone made before the rename keeps pushing without its remote being changed. That settles what a push to a redirected name does not do: it does not create a repository there, as a push to an unused name would. Creating a repository under a name that is being redirected is done deliberately, from **New repository** or `POST /api/repos`, and from that moment the name is its own again.
 

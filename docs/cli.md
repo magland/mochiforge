@@ -118,7 +118,7 @@ mochi repo list --topic webgpu                 # only repositories carrying a to
 mochi repo edit --upstream https://github.com/owner/repo   # record what mochi sync and pr export use
 mochi repo edit --enable-site                  # serve the <repo>.site directory (admin role)
 mochi repo edit --site-source actions          # let a workflow's deploy-pages step publish it
-mochi repo edit --site-label myapp             # myapp.<sites host> instead of <repo>--<collection>
+mochi repo edit --site-label myapp             # myapp.<sites host> instead of <repo>--<alias>
 mochi repo edit --site-domain docs.example.org # a domain of the site's own (site admin)
 mochi repo fork demo/proj myfork
 mochi repo rename demo/proj newname --collection othercollection
@@ -232,6 +232,7 @@ mochi user token list alice
 mochi user token revoke alice <token-id> --yes
 mochi user delete alice --yes
 mochi collection rename mycollection newname
+mochi collection edit sim_instruments --site-alias sims
 mochi collection delete emptyone --yes
 
 mochi config view
@@ -406,11 +407,14 @@ A collection is a directory of repositories, and most of them come into being on
 mochi collection add mycollection
 mochi collection list
 mochi collection rename mycollection newname
+mochi collection edit mycollection --site-alias mine
 ```
 
 Creating one is creating a namespace: the collection named after you is yours to create, and any other name takes a site admin. An empty collection is an empty directory, so removing it again is `rmdir` in the vault.
 
 Renaming one is a single directory rename, since a collection holds everything of its own inside its directory, and the same operation is on the collection's **Settings** page in the web interface. Everything moves with it; token scopes naming the old collection do not, and have to be granted again under the new name. See [Renaming a repository or a collection](vault.md#renaming-a-repository-or-a-collection).
+
+`mochi collection edit --site-alias` sets the label that stands in for the collection's name in its repositories' site hostnames, which is what a collection called something no hostname label may carry (`sim_instruments`) needs. It takes ownership of the collection, like the rename, and the alias is checked against every other collection's. See [Collection aliases](sites.md#collection-aliases).
 
 ### Users and tokens
 

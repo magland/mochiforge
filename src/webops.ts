@@ -27,8 +27,21 @@ import {
   siteDir,
 } from './scan';
 import { clearRepoDomain, repoDomain, setRepoDomain } from './domains';
-import { normalizeHostname } from './siteshost';
-import { editSiteSettings, isUsableSiteLabel, siteLabelConflict, siteSettings } from './sitesettings';
+import { isReservedSiteLabel, normalizeHostname, reservedSiteLabels } from './siteshost';
+import {
+  collectionAliasConflict,
+  collectionSiteAlias,
+  collectionSiteAliases,
+  editSiteSettings,
+  isUsableCollectionAlias,
+  isUsableSiteLabel,
+  listSiteLabels,
+  setCollectionAlias,
+  siteHostFor,
+  siteLabelConflict,
+  siteSettings,
+  storedCollectionAlias,
+} from './sitesettings';
 import {
   Viewer,
   clearSessionCookie,
@@ -986,6 +999,16 @@ export function registerWebOps(
         viewer,
         {
           sitesHost: config.sites.host,
+          // What is already named under the sites host. Only gathered when
+          // there is one: the two scans are cheap but pointless on a vault
+          // serving its sites sandboxed on the forge host.
+          names: config.sites.host
+            ? {
+                labels: listSiteLabels(root),
+                collections: collectionSiteAliases(root),
+                reserved: reservedSiteLabels(),
+              }
+            : null,
           ci: config.ci,
           trustProxy: config.network.trustProxy,
           limits: config.limits,
@@ -1175,6 +1198,23 @@ export function registerWebOps(
     return { name, repos };
   }
 
+  /**
+   * What the collection's Site alias box shows: which tier its alias comes
+   * from, and, when the rewritten label is unavailable, who holds it. The
+   * resolution is the vault's, so it is done here rather than in the page.
+   */
+  function collectionSites(collection: string): forms.CollectionSitesInfo {
+    const row = collectionSiteAliases(root).find((r) => r.collection === collection);
+    const taken = row?.taken ?? '';
+    return {
+      host: loadConfig(root).sites.host,
+      stored: storedCollectionAlias(root, collection),
+      alias: row?.alias ?? null,
+      taken,
+      takenBy: taken ? (collectionAliasConflict(root, taken, collection) ?? '') : '',
+    };
+  }
+
   app.get('/:collection/settings', (req, res) => {
     const viewer = requireViewerPage(root, req, res);
     if (!viewer) return;
@@ -1183,7 +1223,58 @@ export function registerWebOps(
     const msg = typeof req.query.msg === 'string' ? req.query.msg : undefined;
     res
       .type('html')
-      .send(forms.collectionSettingsPage(viewer, loaded.name, loaded.repos.length, collectionOwners(root, loaded.name), msg));
+      .send(
+        forms.collectionSettingsPage(
+          viewer,
+          loaded.name,
+          loaded.repos.length,
+          collectionOwners(root, loaded.name),
+          collectionSites(loaded.name),
+          msg
+        )
+      );
+  });
+
+  /**
+   * Store or clear the collection's site alias. Ownership of the collection is
+   * the whole question, as it is for the owners list and the rename: the alias
+   * decides the hostnames of the sites in this collection and nothing else.
+   * The label it claims is checked against every other collection's, so an
+   * owner cannot take a name another collection is already reached by.
+   */
+  app.post('/:collection/settings/site', form, (req, res) => {
+    const viewer = requireViewerPost(root, req, res);
+    if (!viewer) return;
+    const loaded = loadCollection(req, res, viewer, true);
+    if (!loaded) return;
+    const backUrl = `/${encodeURIComponent(loaded.name)}/settings`;
+    const alias = field(req, 'alias').trim();
+    if (alias !== '' && !isUsableCollectionAlias(alias)) {
+      fail(
+        res,
+        400,
+        'A site alias is lowercase letters, digits, and single interior hyphens, with no doubled hyphen, at most 63 characters.',
+        viewer,
+        backUrl
+      );
+      return;
+    }
+    if (alias !== '') {
+      const holder = collectionAliasConflict(root, alias, loaded.name);
+      if (holder) {
+        fail(res, 409, `The alias ${alias} is already how the collection ${holder} is reached.`, viewer, backUrl);
+        return;
+      }
+    }
+    setCollectionAlias(root, loaded.name, alias);
+    const effective = collectionSiteAlias(root, loaded.name);
+    const msg =
+      alias === ''
+        ? effective
+          ? `Alias cleared; the collection is reached as ${effective}.`
+          : 'Alias cleared; the collection has no derived hostname.'
+        : `Sites in this collection are now served under ${alias}.`;
+    res.redirect(`${backUrl}?msg=${encodeURIComponent(msg)}`);
   });
 
   app.post(
@@ -2005,6 +2096,11 @@ export function registerWebOps(
       const section = forms.isSettingsSection(inParam) ? inParam : undefined;
       const access = repoAccess(loaded.repo.dir);
       const settings = siteSettings(loaded.repo.dir);
+      const sitesHost = loadConfig(root).sites.host;
+      // The label the site would be served under with nothing set: the whole
+      // hostname minus the sites host and the dot joining them.
+      const derivedHost = siteHostFor(root, sitesHost, loaded.repo.collection, loaded.repo.name);
+      const alias = collectionSiteAlias(root, loaded.repo.collection);
       res.type('html').send(
         forms.settingsPage(
           ctx,
@@ -2019,7 +2115,9 @@ export function registerWebOps(
             source: settings.source,
             label: settings.label,
             domain: repoDomain(root, loaded.repo.collection, loaded.repo.name),
-            sitesHost: loadConfig(root).sites.host,
+            sitesHost,
+            derivedLabel: derivedHost ? derivedHost.slice(0, -(sitesHost.length + 1)) : null,
+            collectionAlias: alias,
             dirExists: siteDir(root, loaded.repo.collection, loaded.repo.name) !== null,
           },
           msg,
@@ -2185,6 +2283,16 @@ export function registerWebOps(
       const body = req.body as Record<string, unknown>;
       const label = field(req, 'label').trim();
       if (body.label !== undefined && label !== '') {
+        if (isReservedSiteLabel(label)) {
+          fail(
+            res,
+            409,
+            `The label ${label} is reserved for the operator of this vault: it is one of the names kept for the vault's own use under the sites host.`,
+            viewer,
+            backUrl
+          );
+          return;
+        }
         if (!isUsableSiteLabel(label)) {
           fail(
             res,

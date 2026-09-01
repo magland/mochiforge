@@ -9,6 +9,13 @@ import { collectionDir } from '../layout';
 import { RepoContext, deleteCollection, renameCollection } from '../ops';
 import { displayName, isValidName, listRepoDirs } from '../scan';
 import { normalizeHostname } from '../siteshost';
+import {
+  collectionAliasConflict,
+  collectionSiteAlias,
+  isUsableCollectionAlias,
+  setCollectionAlias,
+  storedCollectionAlias,
+} from '../sitesettings';
 import { DEFAULT_THEME, findTheme, themeNames } from '../themes';
 import { canAdminCollection, isSiteAdmin, removeUserGrants } from '../perms';
 import { loadVault, removeUser, revokeToken, tokenId } from '../vault';
@@ -95,6 +102,62 @@ export function registerAdminApi(
       sendOpError(res, e, 'could not rename the collection');
     }
   });
+
+  /**
+   * A collection's site alias: the label standing in for its name in each of
+   * its repositories' derived site hostnames. Ownership of the collection, as
+   * the rename above takes, since it decides those hostnames and nothing else.
+   *
+   * `siteAlias` is the only field, `""` clearing it and falling back to the
+   * collection's own name where that is usable as a hostname label and its name
+   * rewritten as one otherwise. An alias another collection is already reached
+   * by is refused with 409, naming it, the same answer a claimed repository
+   * label gets.
+   */
+  app.patch('/api/collections/:name', (req, res) => {
+    const auth = requireApiAuth(root, limiter, req, res);
+    if (!auth) return;
+    const name = req.params.name;
+    if (!isValidName(name) || !isCollection(name)) {
+      apiError(res, 404, `no collection ${name} in this vault`);
+      return;
+    }
+    if (!canAdminCollection(root, auth, name)) {
+      apiError(res, 403, `you are not an owner of ${name}`);
+      return;
+    }
+    const alias = stringField(bodyOf(req), 'siteAlias');
+    if (alias === null) {
+      apiError(res, 400, 'nothing to change; provide "siteAlias"');
+      return;
+    }
+    if (alias !== '' && !isUsableCollectionAlias(alias)) {
+      apiError(
+        res,
+        400,
+        '"siteAlias" is lowercase letters, digits, and single interior hyphens, with no doubled hyphen, at most 63 characters'
+      );
+      return;
+    }
+    if (alias !== '') {
+      const holder = collectionAliasConflict(root, alias, name);
+      if (holder) {
+        apiError(res, 409, `the alias ${alias} is already how the collection ${holder} is reached`);
+        return;
+      }
+    }
+    setCollectionAlias(root, name, alias);
+    res.json({ name, siteAlias: storedCollectionAlias(root, name), alias: collectionSiteAlias(root, name) });
+  });
+
+  /** Whether the vault holds a collection of this name; the rename's own check. */
+  function isCollection(name: string): boolean {
+    try {
+      return fs.statSync(collectionDir(root, name)).isDirectory();
+    } catch {
+      return false;
+    }
+  }
 
   // Only an empty one: what "empty" means, and what goes with the directory,
   // is deleteCollection's business, shared with the web route.

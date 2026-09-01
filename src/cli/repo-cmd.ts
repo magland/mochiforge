@@ -187,8 +187,10 @@ repository first. A topic is lowercase letters, digits, and hyphens.
 The site settings take the admin role. --enable-site serves the repository's
 <repo>.site directory; --site-source actions additionally lets a workflow's
 deploy-pages step publish it. --site-label picks the label under the vault's
-sites host ('' goes back to <repo>--<collection>), and --site-domain attaches
-a custom domain, which takes a site admin ('' detaches it).`,
+sites host ('' goes back to the derived <repo>--<alias>, where the alias stands
+in for the collection's name), and --site-domain attaches a custom domain,
+which takes a site admin ('' detaches it). A label another repository holds, or
+one the vault reserves for its operator, is refused.`,
     args: [{ name: 'repo' }],
     options: [
       { name: 'description', type: 'string', value: '<d>', summary: 'New description' },

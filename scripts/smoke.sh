@@ -1350,8 +1350,19 @@ check "a sites host is saved" 302 -D "$TMP/headers" -b "$JAR" "$BASE/admin/setti
 header_has "anchored back at its box" 'location: .*in=sites#sites'
 grep -q '"host": "smoke-sites.example.test"' "$VAULT/config.json" || { echo "FAIL: sites host not persisted"; exit 1; }
 PASS=$((PASS+1)); echo "ok: sites host persisted to config.json"
+# With a host set, the box also reads back what is already named under it: the
+# flat namespace of claimed labels, and each collection's alias. It is the only
+# place both can be seen at once, so an operator does not have to discover a
+# taken label by having a claim refused.
+check "the box lists what is named under the host" 200 -b "$JAR" "$BASE/admin/settings"
+body_has "the claimed labels" 'Claimed labels'
+body_has "the reserved ones, which no repository may claim" '>www<'
+body_has "and each collection's alias" 'Collection aliases'
+body_has "naming a collection that is its own alias" '&lt;repo&gt;--demo'
 check "and cleared again" 302 -b "$JAR" "$BASE/admin/settings/sites" \
   --data-urlencode "csrf=$VS_CSRF" --data-urlencode host=
+check "with no host there is nothing to name" 200 -b "$JAR" "$BASE/admin/settings"
+body_lacks "so the listing is absent" 'Claimed labels'
 check "ci retention is saved" 302 -b "$JAR" "$BASE/admin/settings/ci" \
   --data-urlencode "csrf=$VS_CSRF" --data-urlencode runs=7 --data-urlencode days=14 --data-urlencode artifactMb=25
 grep -q '"runs": 7' "$VAULT/config.json" || { echo "FAIL: ci retention not persisted"; exit 1; }
@@ -2539,6 +2550,12 @@ run_code "collection rename onto an existing one is a conflict" 5 cli collection
 run_code "collection rename of one that is not there is a 404" 4 cli collection rename nosuchone x
 run_ok "collection rename --json" cli collection rename keptaway throwaway --json
 body_has "with the fields a program reads" '"renamedFrom": "keptaway"'
+run_code "collection edit needs something to change" 2 cli collection edit throwaway
+run_ok "collection edit stores a site alias" cli collection edit throwaway --site-alias thrown
+body_has "reporting the hostnames it gives the collection" '<repo>--thrown'
+run_code "an alias another collection is already reached by is refused" 5 cli collection edit throwaway --site-alias demo
+# And the alias goes with the collection rather than blocking its deletion: it
+# describes the collection, as the owners file does.
 run_ok "collection delete with --yes" cli collection delete throwaway --yes
 check "and the collection is gone" 404 "$BASE/throwaway"
 
@@ -3014,6 +3031,69 @@ check "an ineligible repository is served on the forge host" 200 -D "$TMP/header
 body_has "with its content" 'dotted site'
 header_has "sandboxed, as before" 'content-security-policy: sandbox'
 header_lacks "and not redirected anywhere" 'location:'
+
+# A collection's name is as permissive as a repository's, so a collection may be
+# called something no hostname label can be. Refusing there would leave every
+# repository in it with no derived hostname at all, which is the one tier that
+# is supposed to be guaranteed, so a collection's name is rewritten as a label
+# instead: the rewrite can be checked against every other collection first,
+# which a repository name inside one collection cannot be.
+api "create a repository in a collection whose name is no hostname label" 201 -H "$JSON_CT" \
+  --data '{"collection":"sim_instruments","name":"cymbal2","initReadme":true}' "$BASE/api/repos"
+mkdir -p "$VAULT/collections/sim_instruments/repos/cymbal2.site"
+echo '<h1>alias ok</h1>' > "$VAULT/collections/sim_instruments/repos/cymbal2.site/index.html"
+api "enable its site" 200 -X PATCH -H "$JSON_CT" \
+  --data '{"siteEnabled":true}' "$BASE/api/repos/sim_instruments/cymbal2"
+check "the rewritten collection name serves the site" 200 -H 'Host: cymbal2--sim-instruments.sites.localhost' "$BASE/"
+body_has "with its index" 'alias ok'
+check "the forge path redirects there" 302 -D "$TMP/headers" "$BASE/sim_instruments/cymbal2/site/"
+header_has "to the rewritten hostname" 'location: http://cymbal2--sim-instruments.sites.localhost/'
+check "and the name itself names no site, since no hostname may carry it" 404 \
+  -H 'Host: cymbal2--sim_instruments.sites.localhost' "$BASE/"
+
+# An owner can store an alias instead, which is also how two collections whose
+# names rewrite to one label break the tie.
+api "an owner stores an alias of the collection's own" 200 -X PATCH -H "$JSON_CT" \
+  --data '{"siteAlias":"sims"}' "$BASE/api/collections/sim_instruments"
+body_has "reporting the alias in effect" '"alias":"sims"'
+check "which serves the site" 200 -H 'Host: cymbal2--sims.sites.localhost' "$BASE/"
+body_has "with its index" 'alias ok'
+check "and the rewritten name no longer answers" 404 -H 'Host: cymbal2--sim-instruments.sites.localhost' "$BASE/"
+api "an alias another collection is already reached by is refused" 409 -X PATCH -H "$JSON_CT" \
+  --data '{"siteAlias":"demo"}' "$BASE/api/collections/sim_instruments"
+body_has "naming that collection" 'demo'
+api "an alias that is not a single label is refused" 400 -X PATCH -H "$JSON_CT" \
+  --data '{"siteAlias":"a--b"}' "$BASE/api/collections/sim_instruments"
+api "clearing it goes back to the rewritten name" 200 -X PATCH -H "$JSON_CT" \
+  --data '{"siteAlias":""}' "$BASE/api/collections/sim_instruments"
+check "which serves again" 200 -H 'Host: cymbal2--sim-instruments.sites.localhost' "$BASE/"
+
+# The same field on the collection's settings page, where an owner will meet it.
+check "the collection settings page offers the alias" 200 -b "$JAR" "$BASE/sim_instruments/settings"
+body_has "in a box of its own" 'id="site"'
+body_has "saying the name was rewritten to reach it" 'the name rewritten as a hostname label'
+SA_CSRF="$(csrf_of)"
+check "an alias that is not a single label is refused" 400 -b "$JAR" "$BASE/sim_instruments/settings/site" \
+  --data-urlencode "csrf=$SA_CSRF" --data-urlencode alias=a--b
+check "an alias another collection is reached by is refused there too" 409 -b "$JAR" "$BASE/sim_instruments/settings/site" \
+  --data-urlencode "csrf=$SA_CSRF" --data-urlencode alias=demo
+check "the alias is saved from the web" 302 -D "$TMP/headers" -b "$JAR" "$BASE/sim_instruments/settings/site" \
+  --data-urlencode "csrf=$SA_CSRF" --data-urlencode alias=simweb
+header_has "back to the settings page with its confirmation" 'location: /sim_instruments/settings?msg='
+check "and the site serves under it" 200 -H 'Host: cymbal2--simweb.sites.localhost' "$BASE/"
+body_has "with its index" 'alias ok'
+check "clearing it from the web" 302 -b "$JAR" "$BASE/sim_instruments/settings/site" \
+  --data-urlencode "csrf=$SA_CSRF" --data-urlencode alias=
+check "puts the rewritten name back" 200 -H 'Host: cymbal2--sim-instruments.sites.localhost' "$BASE/"
+
+# Some labels under the sites host belong to whoever runs the vault: `www` for a
+# landing page, `api` for something in front of the forge. A repository that had
+# claimed one would quietly own it, so a claim on one is refused.
+api "a reserved label is refused" 409 -X PATCH -H "$JSON_CT" \
+  --data '{"siteLabel":"www"}' "$BASE/api/repos/pushed/created"
+body_has "saying whose it is" 'reserved for the operator'
+check "and nothing answers there" 404 -H 'Host: www.sites.localhost' "$BASE/"
+body_lacks "with no forge chrome either" 'assets/style.css'
 
 # Back to a vault with no sites host, so the checks after this see the default.
 printf '{\n  "theme": "paper"\n}\n' > "$VAULT/config.json"

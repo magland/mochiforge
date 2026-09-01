@@ -158,6 +158,44 @@ rename is undone by renaming back.`,
     },
   },
   {
+    path: ['collection', 'edit'],
+    summary: "Change a collection's site alias",
+    description: `The alias is the label that stands in for the collection's name in each of its
+repositories' site hostnames, <repo>--<alias>.<sites host>. Empty means the
+collection's own name where that name is usable as a hostname label, and the
+name rewritten as one otherwise (simulated_instruments becomes
+simulated-instruments), the rewrite being skipped when another collection
+already holds the label it would produce.
+
+Takes ownership of the collection. An alias another collection is already
+reached by is refused, naming it. Changing the alias moves every site in the
+collection to a new origin, and the hostnames they had stop resolving.`,
+    args: [{ name: 'name', required: true }],
+    options: [
+      { name: 'site-alias', type: 'string', value: '<l>', summary: "Alias under the sites host; '' for the default" },
+      JSON_OPTION,
+      ...TARGET_OPTIONS,
+    ],
+    async run(inv) {
+      const alias = inv.str('site-alias');
+      if (alias === null) throw new CliError('Nothing to change. Pass --site-alias.', EXIT_USAGE);
+      const target = await targetFrom(inv);
+      const data = await api(target, 'PATCH', `/api/collections/${encodeURIComponent(inv.args[0])}`, {
+        siteAlias: alias,
+      });
+      const json = jsonMode(inv);
+      if (json.enabled) {
+        printJson(pickObject(data, json.fields));
+        return;
+      }
+      console.log(
+        data.alias
+          ? `Sites in ${data.name} are served under <repo>--${data.alias}`
+          : `${data.name} has no site alias, so nothing in it has a derived hostname`
+      );
+    },
+  },
+  {
     path: ['collection', 'delete'],
     summary: 'Remove an empty collection',
     description: `Only an empty collection: one holding any repository is refused rather than

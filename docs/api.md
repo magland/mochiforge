@@ -42,8 +42,9 @@ For a shorter introduction aimed at a program rather than a person, see [Mochi F
 ```
 GET    /api/whoami                     the user, their standing, and this token's restriction
 GET    /api/collections                collections and how many repositories each shows the caller
-GET    /api/collections/:name          one collection: its owners and the repositories the caller may see
+GET    /api/collections/:name          one collection: its owners, its site alias, and the repositories the caller may see
 POST   /api/collections                create an empty one            {name}   (your namespace, or site admin)
+PATCH  /api/collections/:name          set its site alias      {siteAlias}     (owner)
 POST   /api/collections/:name/rename   rename it, and everything in it {name}  (owner)
 DELETE /api/collections/:name          remove an empty one                     (owner)
 PUT    /api/collections/:name/owners/:user    add an owner                     (owner)
@@ -60,6 +61,8 @@ DELETE /api/users/:name/tokens/:id     revoke one token
 `POST /api/users` returns the token once. Only its SHA-256 hash is stored, so it cannot be recovered afterwards. What a user may reach is not set on the user: it is granted on the repository (collaborators) or the collection (owners), or by the one site-admin bit `grant` carries.
 
 A token listing never contains a token or its hash. What it contains is an `id`, which is what revocation takes; a token minted before ids existed is identified by the first eight characters of its hash instead, so an existing vault needs no migration.
+
+`PATCH /api/collections/:name` takes one field, `siteAlias`: the label that stands in for the collection's name in each of its repositories' derived site hostnames, `<repo>--<alias>.<sites host>`. `""` clears it, falling back to the collection's own name where that is a usable hostname label and the name rewritten as one otherwise. An alias another collection is already reached by is refused with 409, naming it. The response carries `siteAlias`, what is now stored, and `alias`, what is in effect; `GET /api/collections/:name` reports the same pair as `siteAlias` and `siteHostAlias`, both null on a vault with no sites host. See [Collection aliases](sites.md#collection-aliases).
 
 Renaming a collection moves everything in it: the repositories, their issues, pull requests, releases, sites, run histories, and Git LFS objects. It is one directory rename, so it costs the same on a collection of one repository as on a collection of a hundred gigabytes, except for LFS objects in a bucket, whose keys name the collection and are copied to the new prefix. Requests for the old address are redirected to the new one, this API's routes included: a `GET /api/collections/oldname` or a `GET /api/repos/oldname/thing` answers `301` with a `Location` naming the new address, and a request that writes answers `308` so the method and body survive the hop. The redirect lasts until something else is created under that name; see [The old address](vault.md#the-old-address). Owners travel with the collection and collaborators with each repository; token scopes in `vault.json` naming the old collection are the exception, covering nothing afterwards until granted again. Asking for the name the collection already has answers `{"changed": false}` rather than an error, as elsewhere in this API. See [Renaming a repository or a collection](vault.md#renaming-a-repository-or-a-collection).
 
@@ -134,7 +137,7 @@ Branch and tag deletion take the name as a wildcard path segment, because a ref 
 
 `?confirm=` on delete is the API's equivalent of the web's typed confirmation. It costs nothing and it makes an accidental `DELETE` from a loop over a listing impossible.
 
-The site route is read only. Publishing a site is a workflow's job or a file copy into the vault; an upload path here would be a second way to write the one directory whose contents are served to browsers (see [Sites](sites.md)). What PATCH changes is the settings around that directory: `siteEnabled` is the switch (a site is opt-in, and off nothing is served and workflow deploys are refused), `siteSource` is `"copy"` or `"actions"` and gates the deploy endpoint, `siteLabel` picks the label under the vault's sites host with `""` restoring the derived `<repo>--<collection>`, and `siteDomain` attaches a custom domain with `""` detaching it. A label or domain another repository holds is refused with 409, naming the holder. `GET /api/repos/:c/:r` and the site route both carry the resulting `site` object: `{enabled, source, label, domain, url}`.
+The site route is read only. Publishing a site is a workflow's job or a file copy into the vault; an upload path here would be a second way to write the one directory whose contents are served to browsers (see [Sites](sites.md)). What PATCH changes is the settings around that directory: `siteEnabled` is the switch (a site is opt-in, and off nothing is served and workflow deploys are refused), `siteSource` is `"copy"` or `"actions"` and gates the deploy endpoint, `siteLabel` picks the label under the vault's sites host with `""` restoring the derived `<repo>--<alias>`, and `siteDomain` attaches a custom domain with `""` detaching it. A label or domain another repository holds is refused with 409, naming the holder, as is one of the labels the vault reserves for its operator. `GET /api/repos/:c/:r` and the site route both carry the resulting `site` object: `{enabled, source, label, domain, url}`.
 
 ## Contents and history
 

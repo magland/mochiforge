@@ -95,28 +95,57 @@ mochi config set --sites-host vault-sites.example.org
 
 That writes `sites.host` in the vault's `config.json`, which is read per request, so it is in effect on the next one; `--sites-host ''` clears it again. The same field is on the vault settings page in the web interface (`/admin/settings`), and hand-editing the file does the same thing, which is what a vault with no CLI to hand still supports.
 
-Each eligible repository's site is then served from `<repo>--<collection>.<sites host>`, so `webapp` in collection `alice` becomes `webapp--alice.vault-sites.example.org`. On that hostname the repository is the origin root: `/index.html` is the site's own, and so are `/assets/style.css` and `/favicon.svg`, which the forge does not shadow there. No session is ever resolved on a sites hostname and no cookie is set on one, so a site cannot see a visitor's session even in principle. Responses carry `X-Content-Type-Options: nosniff` and nothing else; the sandbox is gone, because the origin is now doing that work.
+Each eligible repository's site is then served from `<repo>--<alias>.<sites host>`, so `webapp` in collection `alice` becomes `webapp--alice.vault-sites.example.org`. The alias is usually the collection's own name, and [Collection aliases](#collection-aliases) below covers the case where it cannot be. On that hostname the repository is the origin root: `/index.html` is the site's own, and so are `/assets/style.css` and `/favicon.svg`, which the forge does not shadow there. No session is ever resolved on a sites hostname and no cookie is set on one, so a site cannot see a visitor's session even in principle. Responses carry `X-Content-Type-Options: nosniff` and nothing else; the sandbox is gone, because the origin is now doing that work.
 
 The forge path keeps working and redirects: `/<collection>/<repo>/site/...` answers `302` to the same path on the site's origin, query string included. It is a temporary redirect on purpose, so removing `sites.host` takes effect on the next request rather than after every cache in the way has forgotten it. The Site tab links straight to the origin.
 
 Because the hostname is built from the two names, renaming the repository or the collection moves the site to a different origin. The hostname it had answers `301` to the one it has now, path and query kept, on the same terms as the redirect on the forge host: only while no repository answers to the old name. See [The old address](vault.md#the-old-address).
 
-The double hyphen is the separator, and it is unambiguous because neither half may contain one. A collection or repository name may appear in a hostname only if it matches `^[a-z0-9]+(-[a-z0-9]+)*$`: lowercase letters, digits, and single interior hyphens. That rules out uppercase, dots, underscores, leading and trailing hyphens, and doubled hyphens. The combined label must also fit in the 63 characters DNS allows.
+The double hyphen is the separator, and it is unambiguous because neither half may contain one. A name may appear in a hostname only if it matches `^[a-z0-9]+(-[a-z0-9]+)*$`: lowercase letters, digits, and single interior hyphens. That rules out uppercase, dots, underscores, leading and trailing hyphens, and doubled hyphens. The combined label must also fit in the 63 characters DNS allows.
 
-Repository names are more permissive than that, so **not every repository is eligible**, and an ineligible one keeps being served on the forge host under the sandbox. This refuses rather than lowercases, because lowercasing `Webapp1` would collide with a `webapp1` beside it: hostnames are case-insensitive and both names are legal on disk. It is a documented rule, not a bug, and the Site tab points wherever that repository's site actually is.
+Repository names are more permissive than that, so **not every repository is eligible**, and an ineligible one keeps being served on the forge host under the sandbox unless its admin claims a label that is usable. This refuses rather than lowercases, because lowercasing `Webapp1` would collide with a `webapp1` beside it: hostnames are case-insensitive and both names are legal on disk. It is a documented rule, not a bug, and the Site tab points wherever that repository's site actually is.
 
 A value that is not a plausible hostname is ignored and the default used, the same way an unknown theme name is, so a typo in `config.json` cannot take the vault down or serve sites from a name no certificate covers.
 
+### Collection aliases
+
+Collection names are as permissive as repository names, so a collection can be called something no hostname label may carry. Refusing there would be worse than refusing a repository name: every repository in `simulated_instruments` would have no derived hostname at all, and the tier that exists to be the guaranteed one would be missing for a whole collection. So a collection's name is not used directly. Each collection has a **site alias**, the label standing in for its name in every derived hostname, decided in three tiers:
+
+1. the alias stored for the collection, when an owner has set one. It is checked against every other collection when it is written, so it is unique.
+2. otherwise the collection's own name, when that name is already a usable label. Nothing can take this tier away: a vault serving `webapp--alice` keeps serving it whatever else is created later.
+3. otherwise the name rewritten as a label, every run of characters a label may not hold becoming a single hyphen and the ends trimmed, so `simulated_instruments` becomes `simulated-instruments`. This tier applies only when no other collection holds that label at any tier.
+
+The rewrite is deliberately not trusted to be unique: `a_b` and `a.b` both want `a-b`. When two names want one label, neither gets it, rather than one silently winning, and both collections' settings pages say which label is unavailable and why. An owner resolves it by storing an alias:
+
+```bash
+mochi collection edit simulated_instruments --site-alias sims   # <repo>--sims.vault-sites.example.org
+mochi collection edit simulated_instruments --site-alias ''     # back to the tiers above
+```
+
+The same field is in the **Site alias** box of the collection's settings page, and `siteAlias` on `PATCH /api/collections/:name`. It takes ownership of the collection, the same as its rename. An alias another collection is already reached by is refused, naming it. The alias lives in `collections/<name>/site.json`:
+
+```json
+{
+  "alias": "sims"
+}
+```
+
+Changing an alias moves every site in the collection to a new origin at once, and unlike a rename the hostnames they had do not redirect: the alias they carry simply names no collection any more. A collection with no alias at all has no derived hostnames, and its sites stay on the forge host under the sandbox unless each repository claims a label of its own.
+
 ### Choosing the label
 
-A repository need not keep the derived `<repo>--<collection>` label. Its admin can pick one, in the Site box of the settings page, as `siteLabel` on the PATCH route, or with:
+A repository need not keep the derived `<repo>--<alias>` label. Its admin can pick one, in the Site box of the settings page, as `siteLabel` on the PATCH route, or with:
 
 ```bash
 mochi repo edit alice/webapp --site-label myapp     # myapp.vault-sites.example.org
 mochi repo edit alice/webapp --site-label ''        # back to webapp--alice
 ```
 
-A custom label is a single DNS label with no double hyphen, which is what keeps it from ever colliding with a derived name; a label another repository already holds is refused, naming the holder. While a custom label is set, the derived hostname answers `301` to it, path and query kept, the same way a renamed repository's old hostname does. This is also the way out for a repository whose names are not usable as a hostname label: pick a label that is.
+A custom label is a single DNS label with no double hyphen, which is what keeps it from ever colliding with a derived name; a label another repository already holds is refused, naming the holder. While a custom label is set, the derived hostname answers `301` to it, path and query kept, the same way a renamed repository's old hostname does. This is also the way out for a repository whose name is not usable as a hostname label: pick a label that is.
+
+Note that these labels are one flat namespace across the whole vault, first come first served, and any repository admin may claim from it. That is the trade-off for a short hostname, and it is why the derived name is what a site falls back to rather than what it depends on. The vault settings page lists every claimed label with the repository holding it, alongside each collection's alias, so what is taken can be read rather than discovered by having a claim refused.
+
+Some labels are **reserved** and no repository may claim them: `admin`, `api`, `assets`, `cdn`, `forge`, `git`, `localhost`, `mail`, `ns1`, `ns2`, `sites`, `smtp`, `static`, `vault`, and `www`. These are the names an operator is likely to want under the sites host for something else, and a repository that had claimed one would quietly own it. A request for a reserved name is parsed as usual and then answers to nothing, which is what leaves the name free to point elsewhere. A label like `xn--p1ai` needs no reserving: no claimed label may contain a doubled hyphen at all, so none can be read as punycode.
 
 ### A custom domain
 

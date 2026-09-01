@@ -26,6 +26,8 @@ import { registerPullApi } from './api/pulls';
 import { registerRepoApi } from './api/repos';
 import { registerAdminApi } from './api/admin';
 import { registerBackupApi } from './api/backup';
+import { collectionSiteAlias, storedCollectionAlias } from './sitesettings';
+import { loadConfig } from './config';
 import { registerCiRunApi } from './api/ci';
 import { registerReleaseApi } from './api/releases';
 import { registerWriteApi } from './api/write';
@@ -147,7 +149,18 @@ export function registerApi(
       apiError(res, 404, `no collection ${name} in this vault`);
       return;
     }
-    res.json({ name, owners: collectionOwners(root, name), repos: visibleRepos(auth, name).map(displayName) });
+    // siteAlias is what is stored and siteHostAlias what is in effect, the two
+    // differing wherever a tier below the stored one is answering; see the
+    // tiers in src/sitesettings.ts. Both are null on a vault with no sites
+    // host, where a derived hostname would mean nothing.
+    const sitesHost = loadConfig(root).sites.host;
+    res.json({
+      name,
+      owners: collectionOwners(root, name),
+      repos: visibleRepos(auth, name).map(displayName),
+      siteAlias: sitesHost ? storedCollectionAlias(root, name) : null,
+      siteHostAlias: sitesHost ? collectionSiteAlias(root, name) : null,
+    });
   });
 
   app.post('/api/collections', (req, res) => {
