@@ -1,4 +1,3 @@
-import * as crypto from 'crypto';
 import { Express, Request, Response } from 'express';
 import * as fs from 'fs';
 import { GitRepo, isValidRefName, isValidRepoPath } from './git';
@@ -27,6 +26,53 @@ import { LoadedRepo, ah, baseUrlOf, loadRepo, makeCtx, send404, sendBusy, wildca
 
 const COMMITS_PER_PAGE = 35;
 const MAX_RENDER_SIZE = 1024 * 1024;
+
+/**
+ * Raw files over this size are streamed from git rather than read into
+ * memory first. Below it the bytes are read whole, which is what lets the
+ * route tell a pointer from a file and text from binary; above it nothing
+ * needs the bytes but the socket.
+ */
+const STREAM_ABOVE = 8 * 1024 * 1024;
+
+/**
+ * The caching headers a raw file carries, and whether the request was
+ * answered with a 304 and needs nothing more.
+ *
+ * Reading a public repository is anonymous, so its raw files may be cached
+ * publicly; the question is only for how long. A full commit id can never
+ * come to name different bytes, so under one the answer is forever. Under a
+ * branch or tag it is "until it changes", which HTTP spells as revalidate
+ * every time: the ETag is the blob's own object id, which is a hash of the
+ * bytes, so an unchanged file costs a 304 and no body whichever commit now
+ * holds it. A private repository's bytes were served to one reader and must
+ * never come out of a shared cache for another.
+ */
+function rawCacheHeaders(req: Request, res: Response, ref: string, blobSha: string, isPrivate: boolean): boolean {
+  const cacheScope = isPrivate ? 'private' : 'public';
+  if (/^[0-9a-f]{40}$/.test(ref)) {
+    res.setHeader('Cache-Control', `${cacheScope}, max-age=31536000, immutable`);
+    return false;
+  }
+  res.setHeader('Cache-Control', `${cacheScope}, no-cache`);
+  return notModified(req, res, `"${blobSha}"`);
+}
+
+/**
+ * Set the validator and answer 304 if the request already holds it, saying
+ * so. Compared here rather than through req.fresh, which answered false to a
+ * matching If-None-Match on these routes for as long as they have set an
+ * ETag; the comparison is three lines, and this way it is known to run.
+ */
+function notModified(req: Request, res: Response, etag: string): boolean {
+  res.setHeader('ETag', etag);
+  const presented = req.headers['if-none-match'];
+  if (presented && presented.split(',').some((t) => t.trim() === etag || t.trim() === '*')) {
+    res.status(304).end();
+    return true;
+  }
+  return false;
+}
 const MAX_LISTED_COMMITS = 250;
 
 const ARCHIVE_FORMATS: Record<string, { format: 'tar.gz' | 'zip'; type: string }> = {
@@ -346,9 +392,20 @@ export function registerBrowse(app: Express, root: string, gates: Gates, lfs: Lf
         send404(res, `File ${filePath} not found at ${ref}`, viewer);
         return;
       }
-      const buf = await loaded.repo.catBlob(ref, filePath);
       const ext = (filePath.split('.').pop() ?? '').toLowerCase();
       const rawUrl = `${repoUrl(ctx)}/raw/${encPath(ref)}/${encPath(filePath)}`;
+      // The size first, and the bytes only if they will be shown. A file over
+      // the render limit gets its card from the size alone: nothing below
+      // would render it, and reading it whole to learn that held a file the
+      // size of the machine in memory. An LFS pointer is a few hundred bytes
+      // and never reaches this branch.
+      const info = await loaded.repo.blobInfo(ref, filePath);
+      if (info && info.size > MAX_RENDER_SIZE) {
+        const kind = IMAGE_TYPES[ext] ? 'image' : 'too-large';
+        res.type('html').send(views.blobPage(ctx, filePath, { kind, rawUrl, size: info.size }));
+        return;
+      }
+      const buf = await loaded.repo.catBlob(ref, filePath);
       // LFS pointer detection precedes every content branch: an LFS-tracked
       // .md or .png must render as a download card, not as its pointer text.
       // ?plain=1 falls through to the source view, as on GitHub, keeping the
@@ -456,12 +513,17 @@ export function registerBrowse(app: Express, root: string, gates: Gates, lfs: Lf
       }
       const ctx = await makeCtx(root, req, loaded, ref, viewer);
       const blobUrl = `${repoUrl(ctx)}/blob/${encPath(ref)}/${encPath(filePath)}`;
-      if ((await loaded.repo.entryType(ref, filePath)) !== 'blob') {
+      const info = await loaded.repo.blobInfo(ref, filePath);
+      if (!info) {
         send404(res, `File ${filePath} not found at ${ref}`, viewer);
         return;
       }
+      if (info.size > MAX_RENDER_SIZE) {
+        res.redirect(blobUrl);
+        return;
+      }
       const buf = await loaded.repo.catBlob(ref, filePath);
-      if (isBinary(buf) || buf.length > MAX_RENDER_SIZE) {
+      if (isBinary(buf)) {
         res.redirect(blobUrl);
         return;
       }
@@ -481,9 +543,25 @@ export function registerBrowse(app: Express, root: string, gates: Gates, lfs: Lf
         send404(res);
         return;
       }
-      const type = await loaded.repo.entryType(ref, filePath);
-      if (type !== 'blob') {
+      const info = await loaded.repo.blobInfo(ref, filePath);
+      if (!info) {
         res.status(404).type('text/plain').send('not found');
+        return;
+      }
+      // A large file is streamed from git to the socket and never held here;
+      // see rawCacheHeaders for what the two paths share. What the streamed
+      // path gives up is the sniff: without the bytes in hand it cannot tell
+      // text from binary, so anything that is not an image by extension is
+      // served as a download. Small files, which are the ones a browser can
+      // usefully show inline, keep the buffered path below.
+      if (info.size > STREAM_ABOVE) {
+        const ext = (filePath.split('.').pop() ?? '').toLowerCase();
+        if (rawCacheHeaders(req, res, ref, info.sha, repoIsPrivate(loaded.repo.dir))) return;
+        res.setHeader('Content-Security-Policy', 'sandbox');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Content-Length', String(info.size));
+        res.type(IMAGE_TYPES[ext] ?? 'application/octet-stream');
+        await loaded.repo.streamBlob(ref, filePath, res);
         return;
       }
       const buf = await loaded.repo.catBlob(ref, filePath);
@@ -517,17 +595,7 @@ export function registerBrowse(app: Express, root: string, gates: Gates, lfs: Lf
       // on purpose: a redirect to a presigned URL expires and must not be
       // cached. A private repository's bytes were served to one reader and
       // must never come out of a shared cache for another.
-      const cacheScope = repoIsPrivate(loaded.repo.dir) ? 'private' : 'public';
-      if (/^[0-9a-f]{40}$/.test(ref)) {
-        res.setHeader('Cache-Control', `${cacheScope}, max-age=31536000, immutable`);
-      } else {
-        res.setHeader('Cache-Control', `${cacheScope}, no-cache`);
-        res.setHeader('ETag', `"${crypto.createHash('sha256').update(buf).digest('hex').slice(0, 32)}"`);
-        if (req.fresh) {
-          res.status(304).end();
-          return;
-        }
-      }
+      if (rawCacheHeaders(req, res, ref, info.sha, repoIsPrivate(loaded.repo.dir))) return;
       const ext = (filePath.split('.').pop() ?? '').toLowerCase();
       // Repository content must never be able to inject HTML into this
       // origin: non-image types are served as text/plain in a sandbox.
@@ -576,11 +644,7 @@ export function registerBrowse(app: Express, root: string, gates: Gates, lfs: Lf
         res.setHeader('Cache-Control', `${cacheScope}, max-age=31536000, immutable`);
       } else {
         res.setHeader('Cache-Control', `${cacheScope}, no-cache`);
-        res.setHeader('ETag', `"${sha}"`);
-        if (req.fresh) {
-          res.status(304).end();
-          return;
-        }
+        if (notModified(req, res, `"${sha}"`)) return;
       }
       // The slot is held until the stream ends, which is what the gate is for: an
       // archive holds a subprocess and a socket for as long as the client cares

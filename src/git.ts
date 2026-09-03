@@ -246,6 +246,59 @@ export class GitRepo {
     return execGit(this.dir, ['cat-file', 'blob', `${ref}:${path}`]);
   }
 
+  /**
+   * The blob at a path: its object id and size, or null if there is no blob
+   * there. Asked before catBlob wherever the answer decides whether to read at
+   * all, since catBlob holds the whole object in memory and a repository may
+   * hold objects the size of the machine.
+   */
+  async blobInfo(ref: string, path: string): Promise<{ sha: string; size: number } | null> {
+    let out: string;
+    try {
+      out = (await execGit(this.dir, ['ls-tree', '-z', '-l', ref, '--', path])).toString('utf8');
+    } catch {
+      return null;
+    }
+    // ls-tree lists what the path names; a directory lists its own entry,
+    // typed tree, and is not a blob.
+    const m = out.split('\0')[0]?.match(/^(\S+) (\S+) (\S+) +(\S+)\t/);
+    if (!m || m[2] !== 'blob') return null;
+    const size = parseInt(m[4], 10);
+    return Number.isFinite(size) ? { sha: m[3], size } : null;
+  }
+
+  /**
+   * Write a blob's bytes to a stream without holding them. Resolves when git
+   * has finished or the destination has gone; rejects only if git could not
+   * start or exited in error before writing anything. A destination that
+   * closes early has git killed rather than left blocked on a full pipe.
+   */
+  streamBlob(ref: string, path: string, out: NodeJS.WritableStream & { destroyed?: boolean }): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const child = spawn('git', ['-C', this.dir, 'cat-file', 'blob', `${ref}:${path}`], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stderr = '';
+      let wrote = false;
+      child.stderr.on('data', (d: Buffer) => {
+        if (stderr.length < 4096) stderr += d.toString();
+      });
+      child.stdout.once('data', () => {
+        wrote = true;
+      });
+      child.stdout.pipe(out, { end: true });
+      out.on('close', () => {
+        if (child.exitCode === null) child.kill();
+        resolve();
+      });
+      child.on('error', (e) => reject(new GitError(`git cat-file failed: ${e.message}`)));
+      child.on('close', (code) => {
+        if (code === 0 || wrote) resolve();
+        else reject(new GitError(`git cat-file failed: ${stderr.trim() || `exit ${code}`}`));
+      });
+    });
+  }
+
   async log(
     ref: string,
     skip: number,

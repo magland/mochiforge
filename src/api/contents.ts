@@ -37,6 +37,8 @@ const MAX_COMMITS = 250;
 const MAX_LISTED_PATHS = 20000;
 /** The same ceiling the editor applies, so that the two interfaces agree on what is too big. */
 const MAX_FILE_BYTES = 1024 * 1024;
+/** Raw files over this size are streamed from git rather than read into memory first. */
+const STREAM_ABOVE = 8 * 1024 * 1024;
 
 export function registerContentsApi(app: Express, root: string, limiter: AuthLimiter, gates: Gates): void {
   // A directory listing. ?commits=1 adds the last commit per entry, which costs
@@ -93,12 +95,20 @@ export function registerContentsApi(app: Express, root: string, limiter: AuthLim
       apiError(res, 400, 'that is not a usable path');
       return;
     }
+    // The size before the bytes: a file over the limit is refused from its
+    // size alone rather than read whole to be measured. A pointer is a few
+    // hundred bytes and is never the file refused here.
+    const info = await found.repo.blobInfo(ref, filePath);
+    if (!info) {
+      apiError(res, 404, `no file at ${filePath} in ${ref}`);
+      return;
+    }
+    if (info.size > MAX_FILE_BYTES) {
+      apiError(res, 413, `${filePath} is larger than ${MAX_FILE_BYTES} bytes; fetch it from the raw route or a clone`);
+      return;
+    }
     let buf: Buffer;
     try {
-      if ((await found.repo.entryType(ref, filePath)) !== 'blob') {
-        apiError(res, 404, `no file at ${filePath} in ${ref}`);
-        return;
-      }
       buf = await found.repo.catBlob(ref, filePath);
     } catch {
       apiError(res, 404, `no file at ${filePath} in ${ref}`);
@@ -142,19 +152,28 @@ export function registerContentsApi(app: Express, root: string, limiter: AuthLim
       apiError(res, 400, 'ask for a file as /raw/<path>?ref=<ref>');
       return;
     }
-    let buf: Buffer;
-    try {
-      if ((await found.repo.entryType(ref, filePath)) !== 'blob') {
-        apiError(res, 404, `no file at ${filePath} in ${ref}`);
-        return;
-      }
-      buf = await found.repo.catBlob(ref, filePath);
-    } catch {
+    const info = await found.repo.blobInfo(ref, filePath);
+    if (!info) {
       apiError(res, 404, `no file at ${filePath} in ${ref}`);
       return;
     }
     res.setHeader('Content-Security-Policy', 'sandbox');
     res.setHeader('X-Content-Type-Options', 'nosniff');
+    // Large files go from git to the socket without being held here, as a
+    // download, since telling text from binary needs the bytes in hand.
+    if (info.size > STREAM_ABOVE) {
+      res.setHeader('Content-Length', String(info.size));
+      res.type('application/octet-stream');
+      await found.repo.streamBlob(ref, filePath, res);
+      return;
+    }
+    let buf: Buffer;
+    try {
+      buf = await found.repo.catBlob(ref, filePath);
+    } catch {
+      apiError(res, 404, `no file at ${filePath} in ${ref}`);
+      return;
+    }
     res.type(isBinary(buf) ? 'application/octet-stream' : 'text/plain; charset=utf-8');
     res.send(buf);
   });

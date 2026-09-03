@@ -107,7 +107,7 @@ function sameToken(a: string, b: string): boolean {
 // for mochi without forking the rest.
 export async function discoverWorkflows(repo: GitRepo, sha: string): Promise<DiscoveredWorkflow[]> {
   const dirs = ['.github/workflows', '.mochi/workflows'];
-  const byBase = new Map<string, { path: string }>();
+  const byBase = new Map<string, { path: string; size: number }>();
   for (const dir of dirs) {
     let entries;
     try {
@@ -118,18 +118,21 @@ export async function discoverWorkflows(repo: GitRepo, sha: string): Promise<Dis
     for (const e of entries) {
       if (e.type !== 'blob') continue;
       if (!/\.(yml|yaml)$/i.test(e.name)) continue;
-      byBase.set(e.name, { path: `${dir}/${e.name}` });
+      byBase.set(e.name, { path: `${dir}/${e.name}`, size: e.size ?? 0 });
     }
   }
   const out: DiscoveredWorkflow[] = [];
-  for (const [, { path: p }] of [...byBase.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+  for (const [, { path: p, size }] of [...byBase.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    // Judged from the listing's size, before the file is read: a workflow
+    // file the size of the machine would otherwise be held in memory to be
+    // found too large.
+    if (size > MAX_WORKFLOW_SIZE) {
+      out.push({ path: p, source: '', error: 'workflow file is too large' });
+      continue;
+    }
     let source: string;
     try {
       const buf = await repo.catBlob(sha, p);
-      if (buf.length > MAX_WORKFLOW_SIZE) {
-        out.push({ path: p, source: '', error: 'workflow file is too large' });
-        continue;
-      }
       source = buf.toString('utf8');
     } catch {
       continue;
