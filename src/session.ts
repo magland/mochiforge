@@ -163,11 +163,14 @@ function parseCookies(header: string | undefined): Record<string, string> {
 }
 
 function readSession(req: Request, root: string): SessionPayload | null {
-  // The prefixed name first, then the bare one, so a session minted before this
-  // existed survives. A sibling subdomain can still set the bare name, which is
-  // why the prefixed one wins when both arrive.
+  // Only the name this request would have been given a cookie under. On an
+  // https vault that is the prefixed one, and the bare name is not read at
+  // all: a sibling subdomain can set the bare name with a Domain attribute,
+  // and reading it here would let such a page hand a visitor a session of the
+  // attacker's. A session minted over https before the prefix existed is
+  // therefore a sign-out, once, which is the smaller cost.
   const cookies = parseCookies(req.headers.cookie);
-  const raw = cookies[HOST_COOKIE_NAME] ?? cookies[COOKIE_NAME];
+  const raw = cookies[cookieName(req)];
   if (!raw) return null;
   const dot = raw.lastIndexOf('.');
   if (dot === -1) return null;
@@ -234,7 +237,7 @@ export function checkCsrf(req: Request, viewer: Viewer): boolean {
  * belongs next to the CSRF check so the two are read together. An absent Origin
  * is not a failure: plenty of legitimate clients send none.
  */
-function originOk(req: Request): boolean {
+export function originOk(req: Request): boolean {
   const origin = req.get('origin');
   // Absent is allowed. Literal "null" is not: that is an opaque origin, which
   // is what a sandboxed document has, and nothing in the forge's own interface

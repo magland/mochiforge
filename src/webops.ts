@@ -49,6 +49,7 @@ import {
   getViewer,
   setSessionCookie,
   viewerIsAdmin,
+  originOk,
 } from './session';
 import {
   addCollectionOwner,
@@ -238,7 +239,21 @@ export function registerWebOps(
     res.type('html').send(forms.loginPage(next, undefined, githubConfigured(root)));
   });
 
+  // A sign-in form posted from another site is refused. None of these
+  // handlers have a session to check a CSRF token against, since their whole
+  // purpose is to start one, so the Origin header is the check: a browser
+  // sends it on every cross-site POST, and a page elsewhere that auto-submits
+  // an attacker's own username and token would otherwise sign the visitor in
+  // as the attacker without their noticing. A request with no Origin is
+  // allowed, as it is for the CSRF check: plenty of clients send none.
+  function refuseCrossSite(req: Request, res: Response): boolean {
+    if (originOk(req)) return false;
+    fail(res, 403, 'This sign-in was posted from another site and was not accepted.', null, '/login');
+    return true;
+  }
+
   app.post('/login', form, (req, res) => {
+    if (refuseCrossSite(req, res)) return;
     const next = safeNext(field(req, 'next'));
     const github = githubConfigured(root);
     const state = loadVault(root);
@@ -483,6 +498,7 @@ export function registerWebOps(
   }
 
   app.post('/login/link', form, (req, res) => {
+    if (refuseCrossSite(req, res)) return;
     const next = safeNext(field(req, 'next'));
     const allowed = authLimiter.allow(req, null);
     if (!allowed.ok) {
@@ -508,6 +524,7 @@ export function registerWebOps(
   });
 
   app.post('/login/code', form, (req, res) => {
+    if (refuseCrossSite(req, res)) return;
     const allowed = authLimiter.allow(req, null);
     if (!allowed.ok) {
       res.status(429).setHeader('Retry-After', String(allowed.retryAfter));
@@ -529,6 +546,10 @@ export function registerWebOps(
   });
 
   app.post('/login/passkey', jsonForm, (req, res) => {
+    if (!originOk(req)) {
+      res.status(403).json({ error: 'This sign-in was posted from another site and was not accepted.' });
+      return;
+    }
     const allowed = authLimiter.allow(req, null);
     if (!allowed.ok) {
       res.setHeader('Retry-After', String(allowed.retryAfter));

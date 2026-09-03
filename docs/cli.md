@@ -210,6 +210,7 @@ mochi run watch 12 --exit-status
 mochi run cancel 12
 mochi run rerun 12
 mochi run download 12 --dir artifacts
+mochi run exec-command 12                  # the command that runs the run's manual jobs here
 ```
 
 A job log comes back as its last 200 lines by default. That is not a convenience: a log can be large, and handing the whole of one to a caller that is diagnosing a failure wastes its attention on the part that succeeded. `--tail 0` asks for all of it, and the response says whether it kept only the end and whether the server capped the log as it was written, which are different things.
@@ -238,6 +239,7 @@ mochi collection delete emptyone --yes
 mochi runner add laptop --allow 'mycollection/*' --job-timeout 45m
 mochi runner edit laptop --job-timeout 2h      # or 'default' for the vault's 20 minutes
 mochi runner list
+mochi runner remove laptop
 
 mochi config view
 mochi config set --theme slate --ci-runs 50
@@ -447,7 +449,9 @@ mochi user add alice                          # alice owns the collection 'alice
 mochi collab add mycollection/webapp alice    # the write role on one repository
 mochi collab add mycollection/webapp bob --role read   # read: sees it even when private
 mochi collab list mycollection/webapp
+mochi collab remove mycollection/webapp bob
 mochi collection owner add mycollection alice # the admin role on everything in mycollection
+mochi collection owner remove mycollection alice
 mochi user grant alice --site-admin           # everything, everywhere
 mochi user list                               # review who holds tokens and the site-admin bit
 ```

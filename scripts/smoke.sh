@@ -3120,12 +3120,14 @@ HOST_COOKIE="$({ grep -io 'set-cookie: __Host-mochi_session=[^;]*' "$TMP/headers
 check "a request presenting the prefixed cookie is signed in" 200 \
   -H 'X-Forwarded-Proto: https' -H "Cookie: $HOST_COOKIE" "$BASE/"
 body_has "as the owner" '>owner<'
-# A session minted before the prefix existed keeps working, or every signed-in
-# browser would be signed out by an upgrade.
+# Over https only the prefixed name is read. The bare name is the one a
+# sibling subdomain can set with a Domain attribute, so accepting it here would
+# let such a page hand a visitor a session of its own choosing; a session
+# minted before the prefix existed is a sign-out, once.
 BARE_COOKIE="mochi_session=$(printf '%s' "$HOST_COOKIE" | sed 's/^__Host-mochi_session=//')"
-check "the old bare cookie name is still accepted over https" 200 \
+check "the bare cookie name is not read over https" 200 \
   -H 'X-Forwarded-Proto: https' -H "Cookie: $BARE_COOKIE" "$BASE/"
-body_has "and resolves to the same user" '>owner<'
+body_lacks "so the visitor is not signed in by it" '>owner<'
 
 # ---- Git LFS: batch API and local transfer routes ----
 # All of this runs against the local backend, so the suite needs no bucket

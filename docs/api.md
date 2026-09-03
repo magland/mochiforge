@@ -41,6 +41,7 @@ For a shorter introduction aimed at a program rather than a person, see [Mochi F
 
 ```
 GET    /api/whoami                     the user, their standing, and this token's restriction
+POST   /api/login-url                  a one-time sign-in link for a browser  {next?}  -> {url, username, expiresInSeconds}
 GET    /api/collections                collections and how many repositories each shows the caller
 GET    /api/collections/:name          one collection: its owners, its site alias, and the repositories the caller may see
 POST   /api/collections                create an empty one            {name}   (your namespace, or site admin)
@@ -57,6 +58,8 @@ DELETE /api/users/:name                remove a user                  (requires 
 GET    /api/users/:name/tokens         token ids, creation times, scopes
 DELETE /api/users/:name/tokens/:id     revoke one token
 ```
+
+`POST /api/login-url` is what `mochi web` calls: the link it answers lands on a page that names the account and signs the browser in on a click, works once, expires after two minutes, and starts a session bound to the token that asked for it, so revoking that token ends both. See [Signing in on the web](vault.md#signing-in-on-the-web).
 
 `POST /api/users` returns the token once. Only its SHA-256 hash is stored, so it cannot be recovered afterwards. What a user may reach is not set on the user: it is granted on the repository (collaborators) or the collection (owners), or by the one site-admin bit `grant` carries.
 
@@ -329,10 +332,15 @@ Registering the runners a vault will hand jobs to. Note the plural: these are `/
 
 ```
 GET    /api/runners                    registered runners, their liveness, and the queue  (admin)
-POST   /api/runners                    register one   {name, labels?, allow, jobTimeoutMinutes?}  (own every collection in allow, or site admin)
+POST   /api/runners                    register one   {name, labels?, allow, jobTimeoutMinutes?, wakeUrl?, wakeSecret?}  (own every collection in allow, or site admin)
 PATCH  /api/runners/:name              set its job timeout  {jobTimeoutMinutes}           (the same, over its allow)
+POST   /api/runners/:name/token        issue it a new token, ending the old one           (the same, over its allow)
+PUT    /api/runners/:name/wake         set its wake address {wakeUrl, wakeSecret}, or clear it with {}  (site admin to set; the same as above to clear)
+POST   /api/runners/:name/wake         send its wake request now, and report how long it took  (site admin)
 DELETE /api/runners/:name              remove one                                         (the same, over its allow)
 ```
+
+A *wake address* is where the vault sends a request when a job is queued for a runner it has not heard from, so that a runner which stops when idle can be started again; see [A runner that stops when it is idle](workflows.md#a-runner-that-stops-when-it-is-idle). Setting one takes a site admin whoever registered the runner, because it names an address the vault will send requests to, on a timer and on demand, and report whether it answered. `POST .../token` answers `{name, token, ...}` with the new token once, as registration does; the old token stops working at that moment.
 
 `POST` returns `{name, token, labels, allow, jobTimeout}`, and the token once: it is what `mochi runner run --token` presents, and only its hash is kept. `allow` is a list of globs saying which repositories the runner serves and is required, since a runner with no allow list could take no job. `labels` defaults to `["ubuntu-latest"]`.
 

@@ -24,6 +24,9 @@ let base: string;
 let token: string;
 let bobToken: string;
 let repoDir: string;
+let bigBytes: Buffer;
+// Over the threshold above which raw files are streamed rather than buffered.
+const BIG_SIZE = 9 * 1024 * 1024;
 
 function git(dir: string, ...args: string[]): string {
   return execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
@@ -40,6 +43,13 @@ before(async () => {
   fs.writeFileSync(path.join(work, 'README.md'), 'hello\n');
   git(work, 'add', 'README.md');
   git(work, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'first');
+  // A file too large to be read into memory by any route: the raw routes
+  // stream it and the contents route refuses it from its size alone.
+  bigBytes = Buffer.alloc(BIG_SIZE);
+  for (let i = 0; i < BIG_SIZE; i += 4096) bigBytes.writeUInt32LE(i, i);
+  fs.writeFileSync(path.join(work, 'big.bin'), bigBytes);
+  git(work, 'add', 'big.bin');
+  git(work, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'big');
   git(work, 'push', '-q', repoDir, 'main');
   fs.rmSync(work, { recursive: true, force: true });
   // A private repository in the same collection, and a user with no role
@@ -169,5 +179,68 @@ describe('a wake address on a runner', () => {
     assert.equal(res.status, 403);
     const body = (await res.json()) as { error: string };
     assert.match(body.error, /site admin/);
+  });
+});
+
+describe('a large file', () => {
+  it('is streamed from the raw routes, whole and with its length', async () => {
+    for (const url of [`${base}/demo/proj/raw/main/big.bin`, `${base}/api/repos/demo/proj/raw/big.bin?ref=main`]) {
+      const res = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
+      assert.equal(res.status, 200, url);
+      assert.equal(res.headers.get('content-length'), String(BIG_SIZE));
+      assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+      const body = Buffer.from(await res.arrayBuffer());
+      assert.equal(body.length, BIG_SIZE);
+      assert.ok(body.equals(bigBytes), 'the bytes must be the file');
+    }
+  });
+
+  it('is refused by the contents route from its size, and shown as a card by the web', async () => {
+    const api = await fetch(`${base}/api/repos/demo/proj/contents/big.bin?ref=main`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(api.status, 413);
+    const page = await fetch(`${base}/demo/proj/blob/main/big.bin`);
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /raw\/main\/big\.bin/);
+    assert.ok(!html.includes('<td class="code"'), 'a file this size is not rendered as code');
+  });
+
+  it('under a branch revalidates by blob id and answers 304 to a matching ETag', async () => {
+    const first = await fetch(`${base}/demo/proj/raw/main/big.bin`);
+    await first.arrayBuffer();
+    const etag = first.headers.get('etag');
+    assert.ok(etag, 'an ETag is set under a branch');
+    const again = await fetch(`${base}/demo/proj/raw/main/big.bin`, { headers: { 'if-none-match': etag } });
+    assert.equal(again.status, 304);
+  });
+});
+
+describe('a sign-in form posted from another site', () => {
+  it('is refused by its Origin, while one with no Origin is judged on its credential', async () => {
+    const body = new URLSearchParams({ username: 'owner', token: 'wrong' });
+    const cross = await fetch(`${base}/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', origin: 'https://evil.example' },
+      body,
+      redirect: 'manual',
+    });
+    assert.equal(cross.status, 403);
+    const plain = await fetch(`${base}/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body,
+      redirect: 'manual',
+    });
+    assert.equal(plain.status, 401);
+    const own = await fetch(`${base}/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', origin: base },
+      body: new URLSearchParams({ username: 'owner', token }),
+      redirect: 'manual',
+    });
+    assert.equal(own.status, 302);
+    assert.ok(own.headers.get('set-cookie'), 'a same-origin post signs in');
   });
 });
