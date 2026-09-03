@@ -58,7 +58,7 @@ Substituting by name rather than implementing GitHub's artifact and Pages wire p
 
 ### Artifacts
 
-`upload-artifact` stores a tar in the run's directory, `download-artifact` restores it in a later job of the same run, and the run page lists what was produced with a download link. As visible as the repository they belong to, like every other read in a vault. Artifacts are pruned with their run, and a job may not upload more than `ci.artifactMb` (500 MB by default).
+`upload-artifact` stores a tar in the run's directory, `download-artifact` restores it in a later job of the same run, and the run page lists what was produced with a download link. As visible as the repository they belong to, like every other read in a vault. Artifacts are pruned with their run, a job may not upload more than `ci.artifactMb` (500 MB by default) in one artifact, and a run may hold at most 100 of them; replacing one under the same name is always allowed.
 
 Artifacts are addressed by the job's lease, so only a job that is actually running can write one, and only into its own run.
 

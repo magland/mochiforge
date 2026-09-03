@@ -93,20 +93,15 @@ function isTempName(name: string): boolean {
  * file: this runs on a 512mb machine, and an LFS object on the volume can be
  * gigabytes, so reading a whole file to hash it would be the one place a backup
  * could take the vault down.
+ *
+ * Streamed rather than read synchronously, because the other thing a backup
+ * could do to the vault is stall it: the client asks for hashes by default,
+ * and a synchronous loop over gigabytes of LFS objects held the event loop,
+ * and so every other request, for as long as the hashing took.
  */
-function sha256File(file: string): string {
+async function sha256File(file: string): Promise<string> {
   const h = crypto.createHash('sha256');
-  const fd = fs.openSync(file, 'r');
-  try {
-    const buf = Buffer.allocUnsafe(1 << 16);
-    for (;;) {
-      const n = fs.readSync(fd, buf, 0, buf.length, null);
-      if (n === 0) break;
-      h.update(buf.subarray(0, n));
-    }
-  } finally {
-    fs.closeSync(fd);
-  }
+  for await (const chunk of fs.createReadStream(file, { highWaterMark: 1 << 16 })) h.update(chunk as Buffer);
   return h.digest('hex');
 }
 
@@ -160,7 +155,7 @@ interface Counts {
 }
 
 /** One `kind:"file"` line, or null for something that is not a file of the vault. */
-function fileLine(root: string, abs: string, opts: WalkOptions): string | null {
+async function fileLine(root: string, abs: string, opts: WalkOptions): Promise<string | null> {
   let st: fs.Stats;
   try {
     st = fs.lstatSync(abs);
@@ -180,7 +175,7 @@ function fileLine(root: string, abs: string, opts: WalkOptions): string | null {
   };
   if (opts.hash) {
     try {
-      line.sha256 = sha256File(abs);
+      line.sha256 = await sha256File(abs);
     } catch {
       return null;
     }
@@ -294,7 +289,7 @@ export function registerBackupApi(app: Express, root: string, limiter: AuthLimit
 
       for (const name of ROOT_FILES) {
         if (exclude.has('secrets') && SECRET_FILES.has(name)) continue;
-        const line = fileLine(root, path.join(root, name), opts);
+        const line = await fileLine(root, path.join(root, name), opts);
         if (!line) continue;
         counts.files++;
         counts.bytes += JSON.parse(line).size as number;
@@ -315,7 +310,7 @@ export function registerBackupApi(app: Express, root: string, limiter: AuthLimit
             if (!(await walkFiles(abs))) return false;
             continue;
           }
-          const line = fileLine(root, abs, opts);
+          const line = await fileLine(root, abs, opts);
           if (!line) continue;
           counts.files++;
           counts.bytes += JSON.parse(line).size as number;
@@ -349,7 +344,7 @@ export function registerBackupApi(app: Express, root: string, limiter: AuthLimit
             if (!(await walkFiles(abs))) return;
             continue;
           }
-          const line = fileLine(root, abs, opts);
+          const line = await fileLine(root, abs, opts);
           if (!line) continue;
           counts.files++;
           counts.bytes += JSON.parse(line).size as number;
@@ -368,7 +363,7 @@ export function registerBackupApi(app: Express, root: string, limiter: AuthLimit
           const abs = path.join(repos, e.name);
           const rel = `${COLLECTIONS_DIR}/${c.name}/${REPOS_DIR}/${e.name}`;
           if (!e.isDirectory()) {
-            const line = fileLine(root, abs, opts);
+            const line = await fileLine(root, abs, opts);
             if (!line) continue;
             counts.files++;
             counts.bytes += JSON.parse(line).size as number;
@@ -406,7 +401,7 @@ export function registerBackupApi(app: Express, root: string, limiter: AuthLimit
             // private repositories had come back public would be far worse
             // than a poor restore.
             for (const inside of REPO_FILES) {
-              const fileEntry = fileLine(root, path.join(abs, inside), opts);
+              const fileEntry = await fileLine(root, path.join(abs, inside), opts);
               if (!fileEntry) continue;
               counts.files++;
               counts.bytes += JSON.parse(fileEntry).size as number;

@@ -1591,9 +1591,16 @@ export function registerWebOps(
       const target = await loadFileTarget(req, res, viewer, { allowEmptyRepo: false });
       if (!target) return;
       const { loaded, branch, filePath } = target;
-      const type = await loaded.repo.entryType(branch, filePath);
-      if (type !== 'blob') {
+      const info = await loaded.repo.blobInfo(branch, filePath);
+      if (!info) {
         send404(res, `File ${filePath} not found at ${branch}`, viewer);
+        return;
+      }
+      // From the size alone, before the file is read: the checks below say
+      // the same thing after reading it, and a file the size of the machine
+      // should not be read to be told it is too big for a text box.
+      if (info.size > MAX_EDIT_SIZE) {
+        fail(res, 400, 'Only text files up to 1 MB can be edited in the browser.', viewer, urlOf(loaded.repo));
         return;
       }
       const buf = await loaded.repo.catBlob(branch, filePath);

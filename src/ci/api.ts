@@ -830,6 +830,9 @@ export function registerCiApi(app: Express, root: string, engine: CiEngine, auth
 
   // ---- artifacts ----
   //
+  /** How many distinct artifacts one run may hold; see the upload route. */
+  const MAX_ARTIFACTS_PER_RUN = 100;
+  //
   // A job uploads under a name and a later job in the same run downloads by
   // that name. Authorization is the job's lease, so an artifact can only be
   // written by a job that is actually running, and only into its own run.
@@ -859,6 +862,18 @@ export function registerCiApi(app: Express, root: string, engine: CiEngine, auth
     }
     const limit = engine.artifactLimitBytes();
     fs.mkdirSync(dir, { recursive: true });
+    // The per-upload limit reads as a limit on the run, and was not one: a
+    // job that uploaded under a new name each time could fill the disk a
+    // capped artifact at a time. Replacing an artifact is always allowed;
+    // adding one is, up to a count no honest workflow approaches.
+    if (!fs.existsSync(file)) {
+      const present = fs.readdirSync(dir).filter((n) => !/\.tmp-\d+$/.test(n)).length;
+      if (present >= MAX_ARTIFACTS_PER_RUN) {
+        req.resume();
+        apiError(res, 413, `this run already holds ${present} artifacts, the most a run may hold`);
+        return;
+      }
+    }
     const tmp = `${file}.tmp-${process.pid}`;
     const out = fs.createWriteStream(tmp);
     let written = 0;
