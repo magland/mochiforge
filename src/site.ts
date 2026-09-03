@@ -4,11 +4,13 @@ import * as path from 'path';
 import { loadConfig } from './config';
 import { domainRepoFor, repoDomain } from './domains';
 import { containedIn } from './ops';
+import { canReadRepo, repoIsPrivate } from './perms';
 import { resolveRepoRedirect } from './redirects';
 import { esc } from './render';
 import { findRepo, siteDir } from './scan';
 import { findRepoBySiteHostname, siteHostFor, siteSettings } from './sitesettings';
 import { isUnderSitesHost, normalizeHostname } from './siteshost';
+import { AuthResult } from './vault';
 import { send404, wildcard } from './web';
 
 // Serving a repository's static site. This is the only place in mochi where
@@ -90,13 +92,23 @@ export function serveSite(
   repo: string,
   req: Request,
   res: Response,
-  mode: SiteMode
+  mode: SiteMode,
+  auth: AuthResult | null = null
 ): void {
   const found = findRepo(root, collection, repo);
+  const notFound = `Repository ${collection}/${repo} not found`;
   if (!found) {
-    sendSite404(res, mode, `Repository ${collection}/${repo} not found`);
+    sendSite404(res, mode, notFound);
     return;
   }
+  // A private repository's published site is served to anyone, as GitHub
+  // Pages serves one (docs/vault.md says so and why). What is not given away
+  // is the repository's existence: a visitor who could not read it gets, for
+  // a site that is switched off or has no directory, the same sentence an
+  // absent repository gets, rather than one that names the repository and
+  // tells them how its admin could publish. On a sites hostname no session
+  // is resolved, so every visitor there is that visitor.
+  const hidden = repoIsPrivate(found.dir) && !canReadRepo(root, auth, found);
   // The switch, checked before the directory: a site that is not enabled is
   // not served whatever is on disk, and the files stay where they are for the
   // day it is enabled again.
@@ -104,7 +116,9 @@ export function serveSite(
     sendSite404(
       res,
       mode,
-      `${found.collection}/${found.name} does not publish a site. A repository admin can enable one in its settings.`
+      hidden
+        ? notFound
+        : `${found.collection}/${found.name} does not publish a site. A repository admin can enable one in its settings.`
     );
     return;
   }
@@ -113,7 +127,9 @@ export function serveSite(
     sendSite404(
       res,
       mode,
-      `No site for ${found.collection}/${found.name}. Create a ${found.name}.site directory next to the repository, with an index.html at its root.`
+      hidden
+        ? notFound
+        : `No site for ${found.collection}/${found.name}. Create a ${found.name}.site directory next to the repository, with an index.html at its root.`
     );
     return;
   }

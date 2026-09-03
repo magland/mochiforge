@@ -189,6 +189,15 @@ export function registerCiApi(app: Express, root: string, engine: CiEngine, auth
    * far as this can go: where it points is the administrator's business, and
    * they are already trusted with a runner that executes repository code.
    */
+  // A wake address is somewhere the vault will send requests to, on a timer
+  // and on demand, and report back whether it answered. Every user owns a
+  // collection and so may register a runner for it, which would have made
+  // this a way for any user to have the vault probe an address of their
+  // choosing, an internal one included. So the address alone takes a site
+  // admin, as it does in the web interface; the runner itself does not.
+  const WAKE_ADMIN_ONLY =
+    'only a site admin may give a runner a wake address or send its wake request: the vault sends requests to whatever the address names';
+
   function wakeFrom(body: Record<string, unknown>): { wake: { url: string; secret: string } | null } | { error: string } {
     const url = body.wakeUrl;
     const secret = body.wakeSecret;
@@ -257,6 +266,10 @@ export function registerCiApi(app: Express, root: string, engine: CiEngine, auth
     const wake = wakeFrom(body);
     if ('error' in wake) {
       apiError(res, 400, wake.error);
+      return;
+    }
+    if (wake.wake && !isSiteAdmin(auth)) {
+      apiError(res, 403, WAKE_ADMIN_ONLY);
       return;
     }
     const timeout = jobTimeoutFrom(body);
@@ -405,6 +418,10 @@ export function registerCiApi(app: Express, root: string, engine: CiEngine, auth
       apiError(res, 400, wake.error);
       return;
     }
+    if (wake.wake && !isSiteAdmin(auth)) {
+      apiError(res, 403, WAKE_ADMIN_ONLY);
+      return;
+    }
     const runner = setRunnerWake(root, name, wake.wake);
     res.json({ name, wakeUrl: runner?.wakeUrl ?? null });
   });
@@ -426,8 +443,8 @@ export function registerCiApi(app: Express, root: string, engine: CiEngine, auth
       apiError(res, 404, `no runner named ${name}`);
       return;
     }
-    if (!canAdminRunnerGlobs(root, auth, existing.allow)) {
-      apiError(res, 403, 'you must own every collection this runner serves; a site admin may manage any runner');
+    if (!isSiteAdmin(auth)) {
+      apiError(res, 403, WAKE_ADMIN_ONLY);
       return;
     }
     const wake = wakeOf(existing);

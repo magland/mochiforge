@@ -741,7 +741,7 @@ export function registerBrowse(app: Express, root: string, gates: Gates, lfs: Lf
       res.redirect(302, `${origin}/${wildcard(req)}${query}`);
       return;
     }
-    serveSite(root, req.params.collection, req.params.repo, req, res, 'sandbox');
+    serveSite(root, req.params.collection, req.params.repo, req, res, 'sandbox', getViewer(req, root)?.auth ?? null);
   });
 
   // The missing-slash redirect lands on the site origin in one hop rather than

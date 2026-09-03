@@ -151,6 +151,11 @@ export function createApp(root: string) {
 
   const app = express();
   app.disable('x-powered-by');
+  // Node's own querystring rather than the qs package express 4 defaults to.
+  // Nothing here reads a nested query (?a[b]=c), and qs is where express 4's
+  // open advisories live: the parser runs on every anonymous request, so the
+  // package is better not run at all than trusted to be patched in time.
+  app.set('query parser', 'simple');
   const config = loadConfig(root);
   // Behind a TLS proxy (Caddy, Fly, etc.) X-Forwarded-Proto/Host must win, or
   // clone URLs and Secure cookies would use the internal address. On a vault

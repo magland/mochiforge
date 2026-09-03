@@ -173,12 +173,16 @@ export function registerContentsApi(app: Express, root: string, limiter: AuthLim
       return;
     }
     const limit = limitParam(req.query.limit, 30, MAX_COMMITS);
-    try {
-      const commits = await found.repo.log(ref, 0, limit, filePath || undefined);
-      res.json({ ref, commits });
-    } catch {
+    // log() answers an unknown ref with an empty list rather than an error,
+    // because the web's tree page wants exactly that for an empty repository.
+    // The API is asked a question and should say no: a ref that does not
+    // resolve is 404, and an empty history is 200 with nothing in it.
+    if (!(await found.repo.resolve(ref))) {
       apiError(res, 404, `ref ${ref} not found`);
+      return;
     }
+    const commits = await found.repo.log(ref, 0, limit, filePath || undefined);
+    res.json({ ref, commits });
   });
 
   // A commit id, possibly abbreviated, as the web route takes it. Checked

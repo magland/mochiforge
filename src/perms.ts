@@ -218,7 +218,7 @@ function tokenCovers(auth: AuthResult, target: string): boolean {
   return auth.token.scope === undefined || auth.token.scope.some((g) => globMatch(g, target));
 }
 
-function tokenIsScoped(auth: AuthResult): boolean {
+export function tokenIsScoped(auth: AuthResult): boolean {
   return auth.token.scope !== undefined;
 }
 

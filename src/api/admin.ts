@@ -1,4 +1,4 @@
-import { Express } from 'express';
+import { Express, Response } from 'express';
 import * as fs from 'fs';
 import { CiEngine } from '../ci/engine';
 import { CiConfig, LimitsConfig, SitesConfig, isPlausibleHostname, loadConfig, saveConfig } from '../config';
@@ -17,8 +17,8 @@ import {
   storedCollectionAlias,
 } from '../sitesettings';
 import { DEFAULT_THEME, findTheme, themeNames } from '../themes';
-import { canAdminCollection, isSiteAdmin, removeUserGrants } from '../perms';
-import { loadVault, removeUser, revokeToken, tokenId } from '../vault';
+import { canAdminCollection, isSiteAdmin, removeUserGrants, tokenIsScoped } from '../perms';
+import { AuthResult, loadVault, removeUser, revokeToken, tokenId } from '../vault';
 import { apiError, bodyOf, requireApiAuth, sendOpError, stringField } from './auth';
 
 // Administration: users, their tokens, collections, and the vault's own settings.
@@ -180,6 +180,17 @@ export function registerAdminApi(
 
   // ---- users and their tokens ----
 
+  // A token-scoped token reaches its globs and nothing else, and in
+  // particular administers nothing (src/perms.ts). Its own user's token list
+  // is something to administer: a scoped token handed to a script could
+  // otherwise list and revoke the unrestricted tokens beside it, locking the
+  // user out of git and the CLI.
+  function requireUnscoped(auth: AuthResult, res: Response): boolean {
+    if (!tokenIsScoped(auth)) return true;
+    apiError(res, 403, 'a token-scoped token may not list or revoke tokens');
+    return false;
+  }
+
   app.get('/api/users/:name', (req, res) => {
     const auth = requireApiAuth(root, limiter, req, res);
     if (!auth) return;
@@ -199,6 +210,7 @@ export function registerAdminApi(
       apiError(res, 403, 'site admin required to touch another user');
       return;
     }
+    if (!requireUnscoped(auth, res)) return;
     res.json({
       name: req.params.name,
       siteAdmin: user.siteAdmin === true,
@@ -223,6 +235,7 @@ export function registerAdminApi(
       apiError(res, 403, 'site admin required to touch another user');
       return;
     }
+    if (!requireUnscoped(auth, res)) return;
     // Never the token, and never the hash either: an id is what revocation
     // takes, and the hash is a credential-shaped thing with no reason to travel.
     res.json({
@@ -248,6 +261,7 @@ export function registerAdminApi(
       apiError(res, 403, 'site admin required to touch another user');
       return;
     }
+    if (!requireUnscoped(auth, res)) return;
     let result;
     try {
       result = revokeToken(root, req.params.name, req.params.id);

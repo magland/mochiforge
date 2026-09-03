@@ -7,6 +7,7 @@ import type { Server } from 'http';
 import { makeVaultDir } from './helpers';
 import { createApp } from '../src/server';
 import { ROOT_FILES } from '../src/api/backup';
+import { setRepoPrivate } from '../src/perms';
 import { addUserToken } from '../src/vault';
 
 // Hostile input on the two routes that hand a request to git: the smart-HTTP
@@ -21,6 +22,7 @@ let server: Server;
 let root: string;
 let base: string;
 let token: string;
+let bobToken: string;
 let repoDir: string;
 
 function git(dir: string, ...args: string[]): string {
@@ -40,6 +42,12 @@ before(async () => {
   git(work, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'first');
   git(work, 'push', '-q', repoDir, 'main');
   fs.rmSync(work, { recursive: true, force: true });
+  // A private repository in the same collection, and a user with no role
+  // anywhere in it.
+  const secret = path.join(root, 'collections', 'demo', 'repos', 'secret.git');
+  execFileSync('git', ['init', '--bare', '-q', '-b', 'main', secret], { stdio: 'ignore' });
+  setRepoPrivate(secret, true);
+  bobToken = addUserToken(root, 'bob').token;
 
   const app = createApp(root);
   server = app.listen(0, '127.0.0.1');
@@ -112,5 +120,54 @@ describe('the backup manifest', () => {
     for (const name of onDisk) {
       assert.ok(ROOT_FILES.includes(name), `${name} is written at the vault root but not backed up`);
     }
+  });
+});
+
+// A private repository must look exactly like an absent one to anybody who
+// cannot read it, on every surface. The push path and the site routes each
+// once answered the two cases differently, in status or in wording, which
+// let a collection's private names be listed by guessing them.
+describe('a private repository and an absent one', () => {
+  const basic = (t: string) => `Basic ${Buffer.from(`bob:${t}`).toString('base64')}`;
+
+  it('are refused alike on the push path, status and body', async () => {
+    const ask = (name: string) =>
+      fetch(`${base}/demo/${name}/info/refs?service=git-receive-pack`, {
+        headers: { authorization: basic(bobToken) },
+      });
+    const [hidden, absent] = await Promise.all([ask('secret'), ask('nosuch')]);
+    assert.equal(hidden.status, 404);
+    assert.equal(absent.status, 404);
+    assert.equal(await hidden.text(), await absent.text());
+  });
+
+  it('are refused alike on the site route, for a site that is not published', async () => {
+    const [hidden, absent] = await Promise.all([fetch(`${base}/demo/secret/site/`), fetch(`${base}/demo/nosuch/site/`)]);
+    assert.equal(hidden.status, 404);
+    assert.equal(absent.status, 404);
+    const strip = (s: string) => s.replace(/secret|nosuch/g, 'NAME');
+    assert.equal(strip(await hidden.text()), strip(await absent.text()));
+    // And the public one still says what is actually wrong.
+    const open = await fetch(`${base}/demo/proj/site/`);
+    assert.equal(open.status, 404);
+    assert.match(await open.text(), /does not publish a site/);
+  });
+});
+
+describe('a wake address on a runner', () => {
+  it('takes a site admin, however the runner itself is owned', async () => {
+    const res = await fetch(`${base}/api/runners`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${bobToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'bobs',
+        allow: ['bob/*'],
+        wakeUrl: 'http://169.254.169.254/latest/meta-data/',
+        wakeSecret: 's',
+      }),
+    });
+    assert.equal(res.status, 403);
+    const body = (await res.json()) as { error: string };
+    assert.match(body.error, /site admin/);
   });
 });

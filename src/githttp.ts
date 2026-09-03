@@ -158,9 +158,22 @@ export function checkPushAuth(
   const checked = checkCreds(root, limiter, req, 'push');
   if ('ok' in checked) return checked;
   const auth = checked.auth;
+  // One refusal, in one wording, for a private repository the credential has
+  // no role in and for a name that does not exist in a collection it may not
+  // create in. The two used to differ -- 404 for the first, 403 naming the
+  // user for the second -- which let any signed-in user list a collection's
+  // private repositories by pushing at guessed names and reading which code
+  // came back. The sentence is true of both: whoever may create in a
+  // collection owns it, and an owner has the admin role on every repository
+  // in it, so nobody who could create here is ever refused a private one.
+  const notFound = {
+    ok: false as const,
+    status: 404 as const,
+    message: 'repository not found (a push to a name that does not exist creates it only in a collection you own)',
+  };
   if (repo) {
     const role = repoRole(root, auth, repo);
-    if (role === null) return { ok: false, status: 404, message: 'repository not found' };
+    if (role === null) return notFound;
     if (!atLeast(role, 'write')) {
       return {
         ok: false,
@@ -170,13 +183,7 @@ export function checkPushAuth(
     }
     return { ok: true, auth };
   }
-  if (!canCreateRepo(root, auth, collection, repoName)) {
-    return {
-      ok: false,
-      status: 403,
-      message: `user ${auth.username} is not allowed to create ${collection}/${repoName}`,
-    };
-  }
+  if (!canCreateRepo(root, auth, collection, repoName)) return notFound;
   return { ok: true, auth };
 }
 

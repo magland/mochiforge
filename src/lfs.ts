@@ -231,8 +231,15 @@ export function registerLfs(app: Express, root: string, lfs: LfsContext | null, 
           };
         }
         // Already present: omitting actions tells the client to skip the
-        // upload; this is the deduplication mechanism.
-        if (info) return { oid: o.oid, size: o.size, authenticated: true };
+        // upload; this is the deduplication mechanism. Present at the size
+        // the pointer claims, that is. A bucket takes whatever bytes a
+        // presigned PUT delivers, so a client that lied about the size in
+        // one batch and uploaded something else left an object under this
+        // id that is not this object; it fails verification, but it would
+        // otherwise also stand in for every honest upload of the real one
+        // from then on. An object of the wrong size is treated as absent
+        // and the upload it is given overwrites it.
+        if (info && info.size === o.size) return { oid: o.oid, size: o.size, authenticated: true };
         if (o.size > maxSize) {
           return {
             oid: o.oid,
