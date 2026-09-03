@@ -23,6 +23,9 @@ interface RunnerArgs {
   images: Record<string, string>;
   workDir: string | null;
   network: string | null;
+  jobMemory: string | null;
+  jobCpus: string | null;
+  jobPids: number | null;
   cacheDir: string | null;
   actionsUrl: string | null;
   actionCache: boolean;
@@ -83,6 +86,9 @@ function parseArgs(args: string[], usage: () => never): RunnerArgs {
     images: {},
     workDir: null,
     network: null,
+    jobMemory: null,
+    jobCpus: null,
+    jobPids: null,
     cacheDir: null,
     actionsUrl: null,
     actionCache: true,
@@ -109,6 +115,24 @@ function parseArgs(args: string[], usage: () => never): RunnerArgs {
     else if (a === '--actions-url') out.actionsUrl = args[++i];
     else if (a === '--no-action-cache') out.actionCache = false;
     else if (a === '--network') out.network = args[++i];
+    else if (a === '--job-memory' || a === '--job-cpus') {
+      // Passed through to the engine as written, which is the authority on
+      // what "2g" or "1.5" means; only an empty value is refused here.
+      const v = (args[++i] ?? '').trim();
+      if (!/^[0-9][0-9.]*[bkmgBKMG]?$/.test(v)) {
+        console.error(`${a} takes a number, as docker run does (${a === '--job-memory' ? '2g, 512m' : '2, 0.5'}), got: ${v}`);
+        process.exit(1);
+      }
+      if (a === '--job-memory') out.jobMemory = v;
+      else out.jobCpus = v;
+    } else if (a === '--job-pids') {
+      const n = parseInt(args[++i] ?? '', 10);
+      if (!Number.isInteger(n) || n < 0) {
+        console.error('--job-pids takes a number of processes, or 0 for no limit');
+        process.exit(1);
+      }
+      out.jobPids = n;
+    }
     else if (a === '--idle') out.idleSeconds = parseDuration(args[++i] ?? '');
     else if (a === '--wake-port') {
       const port = parseInt(args[++i] ?? '', 10);
@@ -463,6 +487,11 @@ export async function runnerRunCmd(args: string[], usage: () => never): Promise<
     images: { ...DEFAULT_IMAGES, ...(saved?.images ?? {}), ...a.images },
     workDir: a.workDir ?? saved?.workDir,
     network: a.network ?? saved?.network,
+    limits: {
+      memory: a.jobMemory ?? saved?.limits?.memory,
+      cpus: a.jobCpus ?? saved?.limits?.cpus,
+      pids: a.jobPids ?? saved?.limits?.pids,
+    },
     cacheDir: a.cacheDir ?? saved?.cacheDir,
     actionsUrl: a.actionsUrl ?? saved?.actionsUrl,
     actionCache: a.actionCache && (saved?.actionCache ?? true),

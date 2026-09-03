@@ -84,6 +84,36 @@ export function pullImage(image: string, onLine: (line: string) => void): Promis
   });
 }
 
+/**
+ * What one job's container may consume of the machine. A runner serves every
+ * repository its allow list names, and their jobs take turns on one daemon,
+ * so a job that forks without end or allocates until the kernel intervenes
+ * is not only its own failure: it is the next repository's job not running.
+ * The wall-clock timeout bounds how long a job may take, and these bound how
+ * much of the machine it may take while it does.
+ */
+export interface ContainerLimits {
+  /** As docker's --memory takes it: "2g", "512m". */
+  memory?: string;
+  /** As docker's --cpus takes it: "2", "0.5". */
+  cpus?: string;
+  /** The most processes the container may hold at once. */
+  pids?: number;
+}
+
+/**
+ * Processes without a bound are the cheapest way to take a machine down and
+ * the one no job legitimately needs, so the ceiling is on unless the operator
+ * says otherwise; a build that wants more than this many at once is rare
+ * enough to be asked for by name. Memory and CPU have no default: what a job
+ * may reasonably want depends on the machine, and a cap that is wrong for it
+ * fails honest builds rather than protecting anything.
+ */
+export const DEFAULT_PIDS_LIMIT = 4096;
+
+/** The label every job container carries, so a runner can find the ones a crash left behind. */
+export const JOB_CONTAINER_LABEL = 'mochi.job';
+
 export interface ContainerOptions {
   image: string;
   name: string;
@@ -91,6 +121,7 @@ export interface ContainerOptions {
   env: Record<string, string>;
   workdir: string;
   network?: string;
+  limits?: ContainerLimits;
 }
 
 // One container per job, kept alive by a sleep so each step can exec into
@@ -99,6 +130,7 @@ export interface ContainerOptions {
 // for the next one.
 export async function startContainer(opts: ContainerOptions): Promise<string> {
   const args = ['run', '--detach', '--name', opts.name, '--workdir', opts.workdir, '--entrypoint', ''];
+  args.push('--label', `${JOB_CONTAINER_LABEL}=1`);
   for (const b of opts.binds) {
     args.push('--volume', `${b.host}:${b.container}${b.readonly ? ':ro' : ''}`);
   }
@@ -106,9 +138,32 @@ export async function startContainer(opts: ContainerOptions): Promise<string> {
     args.push('--env', `${k}=${v}`);
   }
   if (opts.network) args.push('--network', opts.network);
+  const limits = opts.limits ?? {};
+  const pids = limits.pids ?? DEFAULT_PIDS_LIMIT;
+  if (pids > 0) args.push('--pids-limit', String(pids));
+  if (limits.memory) args.push('--memory', limits.memory);
+  if (limits.cpus) args.push('--cpus', limits.cpus);
   args.push(opts.image, 'sh', '-c', 'while true; do sleep 3600; done');
   const { stdout } = await run(args);
   return stdout.trim();
+}
+
+/**
+ * Remove every job container on this daemon, and say how many there were.
+ *
+ * A job's container is removed when the job finishes or times out, and by
+ * nothing else: a runner killed mid-job, or a machine that lost power, leaves
+ * a container running its idle sleep for good, and on a machine whose docker
+ * directory is a persistent volume, they accumulate across restarts. This
+ * runs when a runner starts, when by construction no job of its own is in
+ * flight. A daemon shared with a second runner would lose that runner's
+ * running job here, which is one more reason not to share one.
+ */
+export async function removeStaleJobContainers(): Promise<number> {
+  const { stdout } = await run(['ps', '--all', '--quiet', '--filter', `label=${JOB_CONTAINER_LABEL}`]);
+  const ids = stdout.split('\n').map((l) => l.trim()).filter((l) => l !== '');
+  for (const id of ids) await removeContainer(id);
+  return ids.length;
 }
 
 export async function removeContainer(id: string): Promise<void> {

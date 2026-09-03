@@ -22,7 +22,7 @@ import {
   statusFunctions,
   stepLabel,
 } from './context';
-import { execInContainer, imagePresent, pullImage, removeContainer, startContainer } from './docker';
+import { execInContainer, imagePresent, pullImage, removeContainer, startContainer, ContainerLimits } from './docker';
 import { EXTERNALS_MOUNT, Externals } from './externals';
 import { StepExecContext, runPostHooks, runSteps } from './steps';
 
@@ -41,6 +41,7 @@ export interface RunnerContext {
   cloneUrl: (collection: string, repo: string) => string;
   workDir: string;
   network?: string;
+  limits?: ContainerLimits;
   actions: ActionStore;
   externals: Externals;
   serverUrl: string;
@@ -171,6 +172,7 @@ export async function runJob(spec: JobSpec, ctx: RunnerContext, hooks: JobHooks)
       env,
       workdir: WORKSPACE,
       network: ctx.network,
+      limits: ctx.limits,
     });
     await execInContainer(containerId, ['mkdir', '-p', RUNNER_TOOL_CACHE], () => {}).done;
     log(`Container started from ${image}`);

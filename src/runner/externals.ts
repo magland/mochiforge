@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execInContainer } from './docker';
+import { downloadTo } from './download';
 
 // JavaScript actions need a node interpreter inside the job's container.
 // GitHub's runner ships its own and mounts it in, which is why an image
@@ -13,6 +14,11 @@ import { execInContainer } from './docker';
 // The downloaded builds are the official linux-x64/arm64 ones, which are
 // linked against glibc. An Alpine or other musl image therefore cannot use
 // them, and gets a clear message rather than a confusing loader error.
+
+// An official node build is around fifty megabytes compressed; a download
+// several times that is not one, whatever nodejs.org or the proxy in front
+// of it is serving.
+const MAX_NODE_BYTES = 256 * 1024 * 1024;
 
 export class ExternalsError extends Error {}
 
@@ -138,7 +144,12 @@ export class Externals {
     fs.rmSync(tmp, { recursive: true, force: true });
     fs.mkdirSync(tmp);
     const tarball = path.join(tmp, 'node.tar.gz');
-    fs.writeFileSync(tarball, Buffer.from(await res.arrayBuffer()));
+    try {
+      await downloadTo(res, tarball, MAX_NODE_BYTES);
+    } catch (e) {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      throw new ExternalsError(`could not download node ${version}: ${e instanceof Error ? e.message : e}`);
+    }
     const extracted = path.join(tmp, 'out');
     fs.mkdirSync(extracted);
     await run('tar', ['-xzf', tarball, '-C', extracted, '--strip-components=1']);

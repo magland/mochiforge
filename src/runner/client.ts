@@ -4,7 +4,7 @@ import * as path from 'path';
 import { JobSpec } from '../ci/protocol';
 import { StepState } from '../ci/runs';
 import { ActionStore, defaultActionCacheDir } from './actions';
-import { containerEngine, dockerAvailable } from './docker';
+import { containerEngine, dockerAvailable, ContainerLimits, DEFAULT_PIDS_LIMIT, removeStaleJobContainers } from './docker';
 import { Externals, defaultExternalsDir } from './externals';
 import { JobResult, defaultWorkDir, runJob } from './job';
 import { startWakeListener } from './wake';
@@ -21,6 +21,8 @@ export interface RunnerConfig {
   images?: Record<string, string>;
   workDir?: string;
   network?: string;
+  /** What one job's container may take of the machine; see ContainerLimits. */
+  limits?: ContainerLimits;
   /** Where `uses:` actions are downloaded from. */
   actionsUrl?: string;
   /** Where downloaded actions and node builds are cached. */
@@ -195,8 +197,9 @@ export class Runner {
   readonly token: string;
   private labels: string[];
   private images: Record<string, string>;
-  private workDir: string;
-  private network?: string;
+  readonly workDir: string;
+  readonly network?: string;
+  readonly limits?: ContainerLimits;
   private idleSeconds: number | null;
   private wake: { port: number; secret: string } | null;
   // When this runner last had something to do. A wake request counts, so that
@@ -223,6 +226,7 @@ export class Runner {
     this.images = { ...DEFAULT_IMAGES, ...(config.images ?? {}) };
     this.workDir = config.workDir ?? defaultWorkDir();
     this.network = config.network;
+    this.limits = config.limits;
     this.idleSeconds = config.idleSeconds && config.idleSeconds > 0 ? config.idleSeconds : null;
     this.wake = config.wakePort && config.wakeSecret ? { port: config.wakePort, secret: config.wakeSecret } : null;
     const actionCache = config.cacheDir ? path.join(config.cacheDir, 'actions') : defaultActionCacheDir();
@@ -302,6 +306,15 @@ export class Runner {
       );
     }
     this.name = identity.name;
+    // Whatever a previous life of this runner left running. A container is
+    // removed when its job ends, so any found here belong to a job that was
+    // under way when the runner last died, and nothing else will ever remove them.
+    try {
+      const stale = await removeStaleJobContainers();
+      if (stale > 0) console.log(`Removed ${stale} job container(s) left behind by an earlier run.`);
+    } catch (e) {
+      console.log(`Could not look for leftover job containers: ${e instanceof Error ? e.message : String(e)}`);
+    }
     // Listening before the banner, because a runner that cannot be woken
     // should say so at the top rather than after claiming to be ready. A
     // failure to bind throws out of here: a runner meant to stop when idle
@@ -321,6 +334,12 @@ export class Runner {
     console.log(`  workdir: ${this.workDir}`);
     console.log(`  labels:  ${labels.join(', ')}`);
     console.log(`  serving: ${identity.allow.join(', ')}`);
+    const limits = [
+      `pids ${this.limits?.pids ?? DEFAULT_PIDS_LIMIT}`,
+      this.limits?.memory ? `memory ${this.limits.memory}` : null,
+      this.limits?.cpus ? `cpus ${this.limits.cpus}` : null,
+    ].filter((l) => l !== null);
+    console.log(`  limits:  ${limits.join(', ')} per job`);
     if (this.idleSeconds !== null) console.log(`  idle:    stopping after ${this.idleSeconds}s with no job`);
     if (listener) console.log(`  wake:    listening on port ${listener.port}`);
     console.log('Waiting for jobs.');

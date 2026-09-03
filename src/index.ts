@@ -840,6 +840,12 @@ on the next run; --no-action-cache downloads every time. --work-dir sets where
 job workspaces are made, --network which Docker network the container joins,
 and MOCHI_RUNNER_TOKEN supplies the token instead of --runner-token.
 
+Each job runs in a container of its own, held to --job-pids <4096> processes
+(0 for no limit) and, when given, --job-memory <2g> and --job-cpus <2>, as
+docker run takes them. A job over the process limit cannot fork; one over the
+memory limit is killed. There is no default for memory or CPU, since the right
+figure is the machine's to decide.
+
 --idle <5m> stops the runner when no job has arrived for that long, which is
 what makes a runner that costs money while it is up affordable: it exits, and
 whatever hosts it stops. Something then has to start it again, so --wake-port

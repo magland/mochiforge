@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as YAML from 'yaml';
 import { ActionRef, actionCacheKey, commitPrefix, refIsImmutable } from '../ci/actionref';
 import { WorkflowStep } from '../ci/workflow';
+import { downloadTo } from './download';
 
 // Fetching actions and reading their definitions. Actions come from a forge
 // over HTTPS (github.com by default) as a source tarball, and are cached on
@@ -12,6 +13,11 @@ import { WorkflowStep } from '../ci/workflow';
 //
 // Nothing here executes anything: the store hands back a directory and a
 // parsed action.yml, and steps.ts decides what to do with them.
+
+// The most an action's source archive may be. The largest actions in common
+// use are a few megabytes of bundled JavaScript; this is a ceiling on what a
+// `uses:` line can make the runner hold, not a budget anyone should approach.
+const MAX_ACTION_BYTES = 256 * 1024 * 1024;
 
 export class ActionError extends Error {}
 
@@ -413,7 +419,12 @@ export class ActionStore {
     fs.rmSync(tmp, { recursive: true, force: true });
     fs.mkdirSync(tmp, { recursive: true });
     const tarball = path.join(tmp, 'source.tar.gz');
-    fs.writeFileSync(tarball, Buffer.from(await res.arrayBuffer()));
+    try {
+      await downloadTo(res, tarball, MAX_ACTION_BYTES);
+    } catch (e) {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      throw new ActionError(`could not fetch ${ref.raw}: ${e instanceof Error ? e.message : e}`);
+    }
     const extracted = path.join(tmp, 'src');
     fs.mkdirSync(extracted);
     try {
