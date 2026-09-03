@@ -67,7 +67,7 @@ jobs:
     steps:
       # On a workflow_run event the default ref is the head of the default
       # branch, which need not be the commit ci tested. Build that commit.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
@@ -259,7 +259,7 @@ jobs:
     steps:
       # The CLI that drives the deploy is this commit's, so it stays in step
       # with the image it is deploying.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
