@@ -2,7 +2,9 @@ import { Express, Request, Response } from 'express';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { EGRESS_FILE } from '../egress';
 import { execGit } from '../git';
+import { GITHUB_SECRET_FILE } from '../githubauth';
 import { AuthLimiter, BUSY_RETRY_SECONDS, Gates } from '../limit';
 import { COLLECTIONS_DIR, REPOS_DIR, collectionDir, collectionsDir, reposDir } from '../layout';
 import { containedIn } from '../ops';
@@ -30,11 +32,29 @@ import { apiError, requireApiAuth } from './auth';
 // See docs/backup.md for the client's half and for what a backup does not
 // promise.
 
-/** The state files at the vault root. Nothing else there belongs to a vault. */
-const ROOT_FILES = ['vault.json', 'config.json', 'runners.json', 'redirects.json', 'domains.json', '.secret'];
+/**
+ * The state files at the vault root. Nothing else there belongs to a vault.
+ *
+ * Named from the modules that write them where a module exports the name,
+ * so that a file the server starts writing under a new name is a compile
+ * error here rather than a file the backup quietly leaves behind. That is how
+ * `.github-secret` was lost for a while: config.json kept the client id, so a
+ * restored vault offered GitHub sign-in and failed every attempt at the
+ * token exchange, and `mochi backup verify` had nothing to say about it.
+ */
+export const ROOT_FILES = [
+  'vault.json',
+  'config.json',
+  'runners.json',
+  'redirects.json',
+  'domains.json',
+  EGRESS_FILE,
+  '.secret',
+  GITHUB_SECRET_FILE,
+];
 
 /** Which of those `--no-secrets` leaves out. config.json holds no credential. */
-const SECRET_FILES = new Set(['vault.json', 'runners.json', '.secret']);
+export const SECRET_FILES = new Set(['vault.json', 'runners.json', '.secret', GITHUB_SECRET_FILE]);
 
 /**
  * The files inside a bare repository that git's own transport leaves behind. A

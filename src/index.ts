@@ -117,6 +117,22 @@ async function serveCmd(args: string[], usage: () => never) {
   // in a loop should not pay for the server it is not starting.
   const { createApp } = await import('./server');
   const app = createApp(vault);
+  // What one request cannot be allowed to do is take the vault down for
+  // everyone else. Node's default for an uncaught exception or an unhandled
+  // rejection is to exit, on the reasoning that the process may be left in
+  // a state nothing can trust. That reasoning is weaker here than usual: the
+  // process holds no state that matters -- the vault is on disk, written by
+  // rename, and re-read on every request -- so what an escaped error has
+  // corrupted is at most one response, which is already lost. So the error is
+  // logged with its stack and the process goes on. Anything that recurs will
+  // recur in the log, which is where an operator can find it; a crash would
+  // have said the same thing once and then stopped serving.
+  process.on('uncaughtException', (err) => {
+    console.error('uncaught exception (the server continues):', err);
+  });
+  process.on('unhandledRejection', (reason) => {
+    console.error('unhandled rejection (the server continues):', reason);
+  });
   app.listen(port, host, () => {
     const url = `http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`;
     if (boot && boot.preset) {

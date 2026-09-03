@@ -722,7 +722,7 @@ const EXCLUDE_OPTIONS: OptionSpec[] = [
   { name: 'no-runs', type: 'boolean', summary: 'Leave out workflow run history (<repo>.runs)' },
   { name: 'no-sites', type: 'boolean', summary: 'Leave out published sites (<repo>.site)' },
   { name: 'no-lfs', type: 'boolean', summary: 'Leave out LFS objects on the volume (<repo>.lfs)' },
-  { name: 'no-secrets', type: 'boolean', summary: 'Leave out vault.json, runners.json, and .secret' },
+  { name: 'no-secrets', type: 'boolean', summary: 'Leave out vault.json, runners.json, .secret, and .github-secret' },
 ];
 
 const QUIET_OPTION: OptionSpec = { name: 'quiet', type: 'boolean', summary: 'Say nothing on success' };

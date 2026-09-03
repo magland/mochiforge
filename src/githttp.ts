@@ -1,5 +1,6 @@
 import { Express, Request, Response } from 'express';
 import { spawn } from 'child_process';
+import * as stream from 'stream';
 import * as zlib from 'zlib';
 import { CiEngine } from './ci/engine';
 import { GitRepo, execGit } from './git';
@@ -314,15 +315,31 @@ export function registerGitHttp(app: Express, root: string, gates: Gates, authLi
     res.setHeader('Content-Type', `application/x-${service}-result`);
     res.setHeader('Cache-Control', 'no-cache');
     const child = spawn('git', [service.slice(4), '--stateless-rpc', dir], { env: gitEnv(req) });
-    let body: NodeJS.ReadableStream = req;
-    if (req.headers['content-encoding'] === 'gzip') {
-      body = req.pipe(zlib.createGunzip());
-    }
-    body.pipe(child.stdin);
+    // The request body reaches git through a pipeline rather than a chain of
+    // pipe() calls, because pipe() leaves an error on the destination with no
+    // listener, and an 'error' nobody listens for ends the process. A body
+    // declared gzip that is not gzip is the case that reaches here from the
+    // network: it is a bad request, and what should die is the request.
+    // Likewise git exiting early, which turns its stdin into an EPIPE for the
+    // writer: the exit code is the answer, and the pipe error is noise.
+    const stages: NodeJS.ReadableStream[] = [req];
+    if (req.headers['content-encoding'] === 'gzip') stages.push(zlib.createGunzip());
+    stream.pipeline([...stages, child.stdin] as unknown as NodeJS.ReadWriteStream[], (err) => {
+      if (err) child.kill();
+    });
     child.stdout.pipe(res);
+    // A client that goes away mid-transfer leaves git writing into a pipe
+    // nobody drains. Node unpipes and pauses the source, which is a git
+    // process blocked forever, holding its packfile in memory, one per
+    // abandoned clone. A response closed without finishing is that case;
+    // one that finished has a git that is already exiting.
+    res.on('close', () => {
+      if (!res.writableFinished) child.kill();
+    });
     child.on('error', () => {
       release();
-      res.status(500).end();
+      if (!res.headersSent) res.status(500);
+      res.end();
     });
     child.on('close', (code) => {
       release();

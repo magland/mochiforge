@@ -181,9 +181,18 @@ export function registerContentsApi(app: Express, root: string, limiter: AuthLim
     }
   });
 
+  // A commit id, possibly abbreviated, as the web route takes it. Checked
+  // before it reaches git: an argument beginning with a dash is an option to
+  // git, and `--output=<path>` would write the listing into the vault.
+  const COMMIT_ID = /^[0-9a-f]{4,40}$/i;
+
   app.get('/api/repos/:collection/:repo/commits/:sha', async (req, res) => {
     const found = requireRepo(root, limiter, req, res);
     if (!found) return;
+    if (!COMMIT_ID.test(req.params.sha)) {
+      apiError(res, 404, `no commit ${req.params.sha}`);
+      return;
+    }
     const detail = await found.repo.commit(req.params.sha);
     if (!detail) {
       apiError(res, 404, `no commit ${req.params.sha}`);
@@ -195,7 +204,7 @@ export function registerContentsApi(app: Express, root: string, limiter: AuthLim
   app.get('/api/repos/:collection/:repo/commits/:sha/patch', async (req, res) => {
     const found = requireRepo(root, limiter, req, res);
     if (!found) return;
-    if (!(await found.repo.commit(req.params.sha))) {
+    if (!COMMIT_ID.test(req.params.sha) || !(await found.repo.commit(req.params.sha))) {
       apiError(res, 404, `no commit ${req.params.sha}`);
       return;
     }

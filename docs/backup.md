@@ -66,7 +66,7 @@ Everything is a whole vault: this backs up `vault.json` too, so a partial backup
 | `--snapshot` | Take a snapshot after a successful sync, then prune |
 | `--keep-daily N`, `--keep-weekly N`, `--keep-monthly N` | Retention (defaults 7, 4, 6) |
 | `--no-runs`, `--no-sites`, `--no-lfs` | Leave out `<repo>.runs`, `<repo>.site`, `<repo>.lfs` |
-| `--no-secrets` | Leave out `vault.json`, `runners.json`, and `.secret` |
+| `--no-secrets` | Leave out `vault.json`, `runners.json`, `.secret`, and `.github-secret` |
 | `--checksum` | Compare hashes rather than size and modification time |
 | `--json`, `--quiet` | A machine-readable summary; or nothing on success |
 
@@ -74,7 +74,7 @@ The vault URL, the exclusions, and the retention policy are sticky: they are rec
 
 Run history is included by default. It is the largest churning part of a vault, and CI retention already trims it (see [Workflows](workflows.md)), but a backup that silently drops a category of thing the web interface shows is a backup that surprises someone eventually. `--no-runs` is there for anyone who would rather have the bytes.
 
-`--no-secrets` leaves out the three files that hold credentials or session state. Note what that costs: a `current/` without `vault.json` is not a vault that can be served as-is, since starting a server on it initializes a new one with a new owner. Use it when the backup is going somewhere less trusted than the vault, and keep `vault.json` somewhere else.
+`--no-secrets` leaves out the four files that hold credentials or session state. Note what that costs: a `current/` without `vault.json` is not a vault that can be served as-is, since starting a server on it initializes a new one with a new owner. Use it when the backup is going somewhere less trusted than the vault, and keep `vault.json` somewhere else.
 
 `.lock` in the backup directory stops two runs from interleaving. A second concurrent run exits 5, the conflict code, rather than fetching against the first one's half-written files. A lock whose holder is gone is broken with a warning, since the usual way to leave one behind is a machine that lost power mid-run, and a backup that stops running until somebody notices a stale file is a backup that stops running.
 

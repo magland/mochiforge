@@ -416,7 +416,10 @@ export class GitRepo {
     const fmt = '%H%x00%an%x00%ae%x00%aI%x00%P%x00%B';
     let out: string;
     try {
-      out = (await execGit(this.dir, ['log', '-1', `--format=${fmt}`, sha, '--'])).toString('utf8');
+      // --end-of-options, so that a revision beginning with a dash is a
+      // revision git fails to find rather than an option it obeys: `--output`
+      // would otherwise write this listing wherever the caller said.
+      out = (await execGit(this.dir, ['log', '-1', `--format=${fmt}`, '--end-of-options', sha, '--'])).toString('utf8');
     } catch {
       return null;
     }
@@ -600,7 +603,9 @@ export class GitRepo {
   }
 
   async commitPatch(sha: string): Promise<string> {
-    return (await execGit(this.dir, ['show', '--format=', '--patch', '--no-color', sha, '--'])).toString('utf8');
+    return (
+      await execGit(this.dir, ['show', '--format=', '--patch', '--no-color', '--end-of-options', sha, '--'])
+    ).toString('utf8');
   }
 
   /**
