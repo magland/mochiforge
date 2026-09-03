@@ -1,0 +1,19 @@
+# Dependency updates, offered as pull requests so that ci runs them first.
+#
+# npm weekly, grouped: a run of one-line bumps is one review rather than
+# eight, and the smoke suite is what says whether the group is safe. Actions
+# weekly too, since the workflows pin by major tag and a new major is worth a
+# glance before it publishes anything.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      dependencies:
+        patterns: ['*']
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

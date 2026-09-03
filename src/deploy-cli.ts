@@ -231,6 +231,62 @@ export function normalizeMemory(memory: string): string {
   return `${mb}mb`;
 }
 
+/**
+ * Whether a tag exists in the registry, or null when the registry could not
+ * be asked. Anonymous, over the registry protocol every pull uses: a token
+ * for the repository, then the manifest by tag.
+ *
+ * The question arises because of the order a release happens in. The npm
+ * package is published first and the image is built from the tag that
+ * follows it, so for some minutes after a release the newest CLI names an
+ * image that is not there yet. Fly would report that as a failed pull after
+ * creating the app; asking first turns it into one sentence before anything
+ * is touched. Not being able to ask is not a refusal: the deploy goes ahead
+ * and Fly says whatever it finds.
+ */
+export async function imagePublished(ref: string): Promise<boolean | null> {
+  const m = /^ghcr\.io\/([a-z0-9._/-]+):([A-Za-z0-9._-]+)$/.exec(ref);
+  if (!m) return null;
+  try {
+    const tokenRes = await fetch(`https://ghcr.io/token?scope=repository:${m[1]}:pull`);
+    if (!tokenRes.ok) return null;
+    const { token } = (await tokenRes.json()) as { token?: string };
+    if (!token) return null;
+    const res = await fetch(`https://ghcr.io/v2/${m[1]}/manifests/${m[2]}`, {
+      method: 'HEAD',
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: [
+          'application/vnd.oci.image.index.v1+json',
+          'application/vnd.docker.distribution.manifest.list.v2+json',
+          'application/vnd.oci.image.manifest.v1+json',
+          'application/vnd.docker.distribution.manifest.v2+json',
+        ].join(', '),
+      },
+    });
+    if (res.status === 404) return false;
+    return res.ok ? true : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Refuse, with the reason, when the image this CLI's version names has not
+ * been published yet. Only for the image chosen by default: a ref the
+ * operator passed by hand is theirs to have got right, and Fly says so.
+ */
+export async function requirePublishedImage(image: string, runner: boolean): Promise<void> {
+  if ((await imagePublished(image)) !== false) return;
+  die(
+    `No published image for this CLI's version: ${image} is not in the registry.\n` +
+      'A version\'s image is built after its npm release and is usually there within\n' +
+      'ten minutes of it. Try again shortly, or pass --image <ref> to deploy another tag\n' +
+      `(${image.replace(/:[^:]+$/, ':latest')} is the newest release that has one)` +
+      (runner ? '.' : ', or --from-source to build this checkout.')
+  );
+}
+
 /** The version of this CLI, which is the image tag deployed unless --image says otherwise. */
 export function ownVersion(): string {
   try {
@@ -467,6 +523,7 @@ export async function deployFlyCmd(args: string[], usage: () => never): Promise<
   }
   const buildRoot = a.fromSource ? sourceRoot() : null;
   const image = buildRoot === null ? a.image ?? `${IMAGE_REPO}:${ownVersion()}` : null;
+  if (image !== null && a.image === null) await requirePublishedImage(image, false);
 
   await requireFly();
 
@@ -597,7 +654,9 @@ export async function deployFlyCmd(args: string[], usage: () => never): Promise<
           'else has a copy of it. A Fly secret can be written but not read back, and this\n' +
           'token is the owner of the vault if this app initialized one:\n' +
           `\n  ${ownerToken}\n` +
-          `\nKeep it, then: mochi login ${appUrl(app)} --token ${ownerToken}\n`
+          `\nKeep it, then sign the CLI in with it: mochi login ${appUrl(app)}\n` +
+          '(paste the token when asked; --token-stdin takes it from a pipe, and --token\n' +
+          'on the command line would leave it in shell history).\n'
       );
     });
   }

@@ -18,6 +18,7 @@ import {
   parseVmSize,
   promptLine,
   requireFly,
+  requirePublishedImage,
   secretNames,
   sourceRoot,
 } from './deploy-cli';
@@ -384,6 +385,7 @@ export async function deployFlyRunnerCmd(args: string[], usage: () => never): Pr
   }
   const buildRoot = a.fromSource ? sourceRoot() : null;
   const image = buildRoot === null ? a.image ?? `${RUNNER_IMAGE_REPO}:${ownVersion()}` : null;
+  if (image !== null && a.image === null) await requirePublishedImage(image, true);
 
   // --image-only: move the machine to a new image and touch nothing else (no
   // registration, no token, no wake rewrite, no secret staging), so it needs

@@ -37,10 +37,12 @@ jobs:
 
       # Trusted publishing needs npm 11.5.1 or newer. Node 24 already ships a
       # new enough npm, but the runner's bundled version is not ours to pin,
-      # so ask for it explicitly and record what we got.
+      # so ask for one explicitly. An exact version rather than @latest: this
+      # is the job that holds the publishing credential, and whatever npm
+      # itself ships tomorrow should not be the first to run with it.
       - name: Use an npm that can publish with OIDC
         run: |
-          npm install -g npm@latest
+          npm install -g npm@12.0.2
           npm --version
 
       - name: Install
@@ -48,6 +50,12 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # The same insistence ci.yml makes, for the same reason: the suite skips
+      # its git-lfs checks when the client is absent, and a release is the
+      # last place a quietly smaller suite should pass.
+      - name: Require git-lfs, so its checks cannot be skipped
+        run: git lfs version
 
       - name: Smoke test
         run: npm run smoke
