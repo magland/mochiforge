@@ -116,9 +116,15 @@ const ALLOWED_TAGS = [
 ];
 
 // No `style` anywhere: an inline style on document content could cover the
-// rest of the page, which is a phishing surface even without scripting.
+// rest of the page, which is a phishing surface even without scripting. No
+// `class` either, for the same reason by another route: the stylesheet is
+// the interface's own, so `<div class="topbar">` in a README would stick to
+// the top of the page over the real one, with a Sign in button of its own.
+// The classes the renderer itself emits are allowed by name below, and only
+// on the elements it emits them on; a class an author wrote is dropped, as
+// GitHub drops it. `id` stays, prefixed (see userContentId).
 const ALLOWED_ATTRS: Record<string, string[]> = {
-  '*': ['id', 'class', 'title', 'align', 'dir', 'lang', 'role', 'aria-label', 'aria-hidden'],
+  '*': ['id', 'title', 'align', 'dir', 'lang', 'role', 'aria-label', 'aria-hidden'],
   a: ['href', 'name', 'target', 'rel'],
   img: ['src', 'alt', 'width', 'height', 'loading'],
   th: ['colspan', 'rowspan', 'scope', 'valign'],
@@ -131,10 +137,44 @@ const ALLOWED_ATTRS: Record<string, string[]> = {
   input: ['type', 'checked', 'disabled'],
 };
 
+// What the renderer puts a class on, and which. Anything else is an author's
+// and is dropped; see ALLOWED_ATTRS. The footnote entries are
+// markdown-it-footnote's own markup.
+const ALLOWED_CLASSES: Record<string, (string | RegExp)[]> = {
+  code: [/^language-[A-Za-z0-9_+#.-]+$/, 'math-error'],
+  div: ['code-block', 'math-block'],
+  blockquote: ['alert', /^alert-(note|tip|important|warning|caution)$/],
+  p: ['alert-title'],
+  li: ['task-item', 'footnote-item'],
+  a: ['heading-anchor', 'footnote-backref'],
+  sup: ['footnote-ref'],
+  hr: ['footnotes-sep'],
+  section: ['footnotes'],
+  ol: ['footnotes-list'],
+};
+
+/**
+ * The prefix every id in a rendered document carries. The document and the
+ * page around it share one id space, and the page's script finds its own
+ * elements by id: a README with `<div id="jump">` would otherwise be what
+ * openJump() found and tried to show as a dialog. GitHub prefixes with the
+ * same word. Links within the document (`#install`, a footnote's `#fn1`, a
+ * heading's own anchor) are rewritten to match, so a document's table of
+ * contents keeps working; a link from outside the document to `/repo#install`
+ * finds nothing by that name, and the page script takes it to the prefixed
+ * element instead (followHash in src/pagescript.ts).
+ */
+export const USER_CONTENT_PREFIX = 'user-content-';
+
+function prefixId(attribs: sanitizeHtml.Attributes): void {
+  if (attribs.id !== undefined && attribs.id !== '') attribs.id = USER_CONTENT_PREFIX + attribs.id;
+}
+
 function sanitizeOptions(opts: MarkdownOpts): sanitizeHtml.IOptions {
   return {
     allowedTags: ALLOWED_TAGS,
     allowedAttributes: ALLOWED_ATTRS,
+    allowedClasses: ALLOWED_CLASSES,
     allowedSchemes: ['http', 'https', 'mailto', 'ftp'],
     allowedSchemesAppliedToAttributes: ['href', 'src', 'cite'],
     allowProtocolRelative: false,
@@ -143,7 +183,9 @@ function sanitizeOptions(opts: MarkdownOpts): sanitizeHtml.IOptions {
       // markdown and links written as HTML with one implementation.
       a: (tagName, attribs) => {
         const href = attribs.href;
-        if (href && isRelative(href)) {
+        if (href && href.startsWith('#')) {
+          if (href.length > 1) attribs.href = `#${USER_CONTENT_PREFIX}${href.slice(1)}`;
+        } else if (href && isRelative(href)) {
           attribs.href = resolveRef(href, opts.blobBase);
         } else if (href && /^https?:/i.test(href)) {
           attribs.rel = 'nofollow noopener noreferrer';
@@ -154,6 +196,12 @@ function sanitizeOptions(opts: MarkdownOpts): sanitizeHtml.IOptions {
         const src = attribs.src;
         if (src && isRelative(src)) attribs.src = resolveRef(src, opts.rawBase);
         attribs.loading = 'lazy';
+        return { tagName, attribs };
+      },
+      // Every element, the two above included: sanitize-html applies this
+      // entry and then the element's own, so the id prefix lives here alone.
+      '*': (tagName, attribs) => {
+        prefixId(attribs);
         return { tagName, attribs };
       },
     },

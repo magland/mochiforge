@@ -583,9 +583,9 @@ check "create docs/guide.md" 302 -b "$JAR" "$BASE/demo/proj/new/main" \
   --data-urlencode "message=Add guide"
 check "markdown blob renders" 200 -b "$JAR" "$BASE/demo/proj/blob/main/docs/guide.md"
 body_has "rendered markdown body" 'class="rendered markdown-body"'
-body_has "heading anchor id" '<h1 id="guide">'
+body_has "heading anchor id, prefixed so a document cannot name the page's own elements" '<h1 id="user-content-guide">'
 body_has "relative link resolved against the file directory" 'href="/demo/proj/blob/main/README.md"'
-body_has "anchor link left alone" 'href="#guide"'
+body_has "anchor link follows the prefixed id" 'href="#user-content-guide"'
 body_has "fenced code highlighted" 'hljs-keyword'
 body_has "source view offered" 'docs/guide.md?plain=1'
 body_lacks "no numbered lines in the preview" 'class="lnum"'

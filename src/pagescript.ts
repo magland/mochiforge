@@ -141,11 +141,38 @@ function findKey(e, input) {
 // and kept for the tab, so typing costs nothing after the first opening.
 var jumpRepos = null;
 var jumpCtx = null;
+var jumpCtxRead = false;
 var jumpSel = 0;
-(function () {
-  var el = document.getElementById('jump-data');
-  if (el) { try { jumpCtx = JSON.parse(el.textContent); } catch (e) {} }
-})();
+// A path on this origin, or null. The context is read out of the page, and
+// a rendered document shares the page; an href that is not a local path is
+// not one the box will send anybody to.
+function localPath(s) {
+  return typeof s === 'string' && s.charAt(0) === '/' && s.charAt(1) !== '/' && s.charAt(1) !== '\\\\' ? s : null;
+}
+// The repository the page is about, read when the box first opens rather than
+// when this file loads: the script is in <head>, so at load time the body,
+// and the element, do not exist yet. The selector names the script tag the
+// template emits (src/views.ts); a rendered document cannot contain one.
+function jumpContext() {
+  if (jumpCtxRead) return jumpCtx;
+  jumpCtxRead = true;
+  var el = document.querySelector('script#jump-data[type="application/json"]');
+  if (!el) return null;
+  var raw;
+  try { raw = JSON.parse(el.textContent); } catch (e) { return null; }
+  if (!raw || typeof raw.repo !== 'string') return null;
+  var sections = [];
+  var list = Array.isArray(raw.sections) ? raw.sections : [];
+  for (var i = 0; i < list.length; i++) {
+    var href = localPath(list[i] && list[i].href);
+    if (href && typeof list[i].label === 'string') sections.push({ label: list[i].label, href: href });
+  }
+  var searchUrl = localPath(raw.searchUrl);
+  var findUrl = localPath(raw.findUrl);
+  if (!searchUrl || !findUrl) return null;
+  jumpCtx = { repo: raw.repo, sections: sections, searchUrl: searchUrl, findUrl: findUrl };
+  return jumpCtx;
+}
 function loadJumpRepos() {
   if (jumpRepos) return Promise.resolve(jumpRepos);
   var cached = null;
@@ -182,6 +209,7 @@ function jumpScore(hay, q) {
 function jumpItems() {
   var q = document.getElementById('jump-q').value.trim().toLowerCase();
   var out = [];
+  var jumpCtx = jumpContext();
   if (jumpCtx) {
     for (var s = 0; s < jumpCtx.sections.length; s++) {
       var sec = jumpCtx.sections[s];
@@ -278,6 +306,20 @@ document.addEventListener('click', function (e) {
   var dlg = document.getElementById('jump');
   if (dlg && dlg.open && e.target === dlg) dlg.close();
 });
+// Ids inside a rendered document carry a user-content- prefix (see
+// src/markdown.ts), so a link from outside it to /repo#install names an
+// element that is not there under that name. When the fragment finds nothing,
+// the prefixed element is scrolled to instead, on load and on every change.
+function followHash() {
+  var h = location.hash ? String(location.hash).slice(1) : '';
+  if (!h || document.getElementById(h)) return;
+  var name;
+  try { name = decodeURIComponent(h); } catch (e) { name = h; }
+  var el = document.getElementById('user-content-' + name);
+  if (el && el.scrollIntoView) el.scrollIntoView();
+}
+document.addEventListener('DOMContentLoaded', followHash);
+window.addEventListener('hashchange', followHash);
 // The filter box above a listing: hide the rows that do not match, and say so
 // when none do.
 function filterRows(input) {
