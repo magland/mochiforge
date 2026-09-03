@@ -27,6 +27,7 @@ jobs:
     permissions:
       contents: write # to push the release tag
       id-token: write # to mint the OIDC token npm exchanges for a credential
+      actions: write # to start the image workflow for the tag (see the last step)
     steps:
       - uses: actions/checkout@v4
 
@@ -81,3 +82,18 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "v$version" -m "v$version"
           git push origin "v$version"
+
+      # The image for the release, asked for by name. image.yml declares a
+      # trigger on tag pushes, but a push made with the workflow's own token
+      # starts no workflow: GitHub excepts only workflow_dispatch and
+      # repository_dispatch from that rule, so the tag push above has never
+      # built an image, and no released version has ever had one under its
+      # own tag. Dispatching on the tag's ref is the exception the rule allows,
+      # and image.yml reads the version off the ref exactly as it would have
+      # for the push.
+      - name: Build the image for the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          gh workflow run image.yml --ref "v$version"

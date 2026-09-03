@@ -1,9 +1,11 @@
 # Publishes the container image that `mochi deploy fly` deploys.
 #
 # Two kinds of event produce an image. A version tag, which the publish
-# workflow creates after a successful npm release, is tagged with that version
-# and moves `latest`; a successful ci run on main is tagged `main` and nothing
-# else. So the image tags follow the released versions rather than tracking
+# workflow creates after a successful npm release and then dispatches this
+# workflow for by name (a tag pushed with the workflow's own token starts no
+# workflow by itself, so the `push: tags` trigger below serves a tag somebody
+# pushes by hand), is tagged with that version and moves `latest`; a
+# successful ci run on main is tagged `main` and nothing else. So the image tags follow the released versions rather than tracking
 # them separately, and `deploy` can pin to the CLI's own version and expect to
 # find it.
 #

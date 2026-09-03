@@ -280,10 +280,11 @@ export async function requirePublishedImage(image: string, runner: boolean): Pro
   if ((await imagePublished(image)) !== false) return;
   die(
     `No published image for this CLI's version: ${image} is not in the registry.\n` +
-      'A version\'s image is built after its npm release and is usually there within\n' +
-      'ten minutes of it. Try again shortly, or pass --image <ref> to deploy another tag\n' +
-      `(${image.replace(/:[^:]+$/, ':latest')} is the newest release that has one)` +
-      (runner ? '.' : ', or --from-source to build this checkout.')
+      "A version's image is built after its npm release and is usually there within\n" +
+      'ten minutes of it. Try again shortly, or pass --image <ref> to deploy another\n' +
+      `tag: ${image.replace(/:[^:]+$/, ':main')} is the newest build of main that passed\n` +
+      'its tests' +
+      (runner ? '.' : ', and --from-source builds this checkout instead.')
   );
 }
 
