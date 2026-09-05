@@ -88,6 +88,7 @@ code, pre, .mono { font-family: var(--font-mono); }
 .topbar {
   position: sticky; top: 0; z-index: 30;
   background: var(--surface); border-bottom: 1px solid var(--border);
+  margin-bottom: 1em;
 }
 .topbar .container { display: flex; align-items: center; gap: var(--s3); height: 52px; }
 /* The brand is the logotype from logo.ts, which inherits the text colour. Its
@@ -231,7 +232,7 @@ main { padding: var(--s5) var(--s4) var(--s7); }
    rather than read: an operator checking which build is live wants it to be
    there, and everybody else wants it out of the way. Ordinary inline flow, so
    a narrow screen wraps the line instead of scrolling it. */
-.pagefoot { border-top: 1px solid var(--border); }
+.pagefoot { border-top: 1px solid var(--border); margin-top: 1em;}
 .pagefoot .container { padding-top: var(--s3); padding-bottom: var(--s5); color: var(--fg-subtle); font-size: var(--t-xs); }
 .pagefoot .mono { font-size: 11px; }
 .foot-sep { color: var(--border); }
