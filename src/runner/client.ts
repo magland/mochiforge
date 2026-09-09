@@ -84,6 +84,7 @@ export class JobClient {
   private buffer: { s: number; t: string; l: string }[] = [];
   private flushing = false;
   private cancelSeen = false;
+  private cancelListeners: (() => void)[] = [];
   private timer: NodeJS.Timeout | null = null;
 
   constructor(private runner: { host: string; token: string }, private spec: JobSpec) {}
@@ -142,16 +143,31 @@ export class JobClient {
     return this.cancelSeen;
   }
 
+  // Called once, the first time a heartbeat learns the job should stop. The
+  // flag above is polled between steps; this is for the step that is running
+  // now, which nothing polls and which only removing the container can end.
+  onCancel(listener: () => void): void {
+    if (this.cancelSeen) listener();
+    else this.cancelListeners.push(listener);
+  }
+
+  private markCancelled(): void {
+    if (this.cancelSeen) return;
+    this.cancelSeen = true;
+    const listeners = this.cancelListeners.splice(0, this.cancelListeners.length);
+    for (const l of listeners) l();
+  }
+
   private async heartbeat(): Promise<void> {
     try {
       const res = await fetch(`${this.base()}/heartbeat`, { method: 'POST', headers: this.headers() });
       if (res.status === 409) {
         // The server took the job back (lease expired, run cancelled). Stop.
-        this.cancelSeen = true;
+        this.markCancelled();
         return;
       }
       const body = (await res.json()) as { cancel?: boolean };
-      if (body.cancel) this.cancelSeen = true;
+      if (body.cancel) this.markCancelled();
     } catch {
       // A transient failure is not a cancellation; keep working.
     }
@@ -438,6 +454,7 @@ export async function executeSpec(spec: JobSpec, deps: ExecuteDeps): Promise<Job
         log: (i, line) => client.log(i, line),
         progress: (steps) => void client.progress(steps),
         cancelled: () => client.cancelled(),
+        onCancel: (listener) => client.onCancel(listener),
       }
     );
   } catch (e) {

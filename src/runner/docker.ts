@@ -239,35 +239,3 @@ export function execInContainer(
   });
   return { child, done };
 }
-
-// Copy a file into a container. `docker cp` from stdin needs a tar stream, so
-// the simpler route for the small files the runner writes (step scripts, the
-// environment files) is to pipe the bytes through a shell redirect.
-export function writeFileInContainer(id: string, containerPath: string, content: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      engineBin,
-      ['exec', '--interactive', id, 'sh', '-c', `cat > "$0"`, containerPath],
-      { stdio: ['pipe', 'ignore', 'pipe'] }
-    );
-    let stderr = '';
-    child.stderr?.on('data', (b: Buffer) => {
-      stderr += b.toString('utf8');
-    });
-    child.on('error', (e) => reject(new DockerError(e.message)));
-    child.on('close', (code) =>
-      code === 0 ? resolve() : reject(new DockerError(`writing ${containerPath} failed: ${stderr.trim()}`))
-    );
-    child.stdin?.write(content);
-    child.stdin?.end();
-  });
-}
-
-export async function readFileInContainer(id: string, containerPath: string): Promise<string> {
-  try {
-    const { stdout } = await run(['exec', id, 'sh', '-c', `cat "$0" 2>/dev/null || true`, containerPath]);
-    return stdout;
-  } catch {
-    return '';
-  }
-}

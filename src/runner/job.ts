@@ -34,6 +34,8 @@ export interface JobHooks {
   log: (stepIndex: number, line: string) => void;
   progress: (steps: StepState[]) => void;
   cancelled: () => boolean;
+  /** Registers a listener called once, when cancellation is first learned of. */
+  onCancel?: (listener: () => void) => void;
 }
 
 export interface RunnerContext {
@@ -101,13 +103,22 @@ export async function runJob(spec: JobSpec, ctx: RunnerContext, hooks: JobHooks)
   let containerId: string | null = null;
   // `timeout-minutes` is enforced here rather than by the server: the lease
   // sweep only notices a runner that has stopped heartbeating, and a job stuck
-  // inside a step heartbeats perfectly well. Cancellation is cooperative and
-  // checked between steps, so a deadline that only set the flag would never
-  // interrupt the step that is actually hanging; removing the container is what
-  // makes the in-flight exec fail and the loop unwind.
+  // inside a step heartbeats perfectly well. The cancelled flag is checked
+  // between steps, so neither a deadline nor a cancel that only set it would
+  // ever interrupt the step that is actually hanging; removing the container is
+  // what makes the in-flight exec fail and the loop unwind. Both do that, and
+  // `stopped` records that they did, so nothing tries to use the container
+  // afterwards.
   let timedOut = false;
+  let stopped = false;
   let deadline: NodeJS.Timeout | null = null;
   const cancelled = () => hooks.cancelled() || timedOut;
+  const stopContainer = (why: string) => {
+    if (stopped || !containerId) return;
+    stopped = true;
+    log(why);
+    void removeContainer(containerId);
+  };
 
   const finish = async (conclusion: Conclusion): Promise<JobResult> => {
     currentStep = RUNNER_STEP;
@@ -177,7 +188,6 @@ export async function runJob(spec: JobSpec, ctx: RunnerContext, hooks: JobHooks)
     await execInContainer(containerId, ['mkdir', '-p', RUNNER_TOOL_CACHE], () => {}).done;
     log(`Container started from ${image}`);
 
-    const id = containerId;
     // A runner and its server are separate long-running processes and need not
     // be the same version, so a spec that carries no usable timeout falls back
     // to GitHub's six hours rather than to NaN, which setTimeout would treat as
@@ -190,9 +200,13 @@ export async function runJob(spec: JobSpec, ctx: RunnerContext, hooks: JobHooks)
     const delay = Math.min(limit * 60_000, 2 ** 31 - 1);
     deadline = setTimeout(() => {
       timedOut = true;
-      log(`Job exceeded its timeout of ${limit} minute${limit === 1 ? '' : 's'}`);
-      void removeContainer(id);
+      stopContainer(`Job exceeded its timeout of ${limit} minute${limit === 1 ? '' : 's'}`);
     }, delay);
+    // A cancel that arrives while a step is running is served the same way.
+    // One that arrived earlier is caught by the step loop before it runs
+    // anything, and the listener fires at once, so the container goes either
+    // way.
+    hooks.onCancel?.(() => stopContainer('The run was cancelled; stopping the job container'));
 
     const exec: StepExecContext = {
       containerId,
@@ -246,10 +260,11 @@ export async function runJob(spec: JobSpec, ctx: RunnerContext, hooks: JobHooks)
     failed = failed || result.failed;
 
     // Post steps run even when the job failed or was cancelled, which is what
-    // makes them useful for cleanup. A timeout is the exception: the container
-    // they would run in is the thing that was torn down to stop the job, so
-    // attempting them would only add a failure for each one to the log.
-    if (rt.postHooks.length && !timedOut) {
+    // makes them useful for cleanup. A job stopped mid-step, by its timeout or
+    // by a cancel, is the exception: the container they would run in is the
+    // thing that was torn down to stop the job, so attempting them would only
+    // add a failure for each one to the log.
+    if (rt.postHooks.length && !stopped) {
       currentStep = RUNNER_STEP;
       await runPostHooks(exec, failed);
     }

@@ -22,7 +22,7 @@ import {
   shellCommand,
   statusFunctions,
 } from './context';
-import { execInContainer, readFileInContainer, writeFileInContainer } from './docker';
+import { execInContainer } from './docker';
 import { Externals } from './externals';
 import { findOverride } from './overrides';
 
@@ -267,8 +267,39 @@ async function makeFileCommands(ctx: StepExecContext, tag: string): Promise<File
     summary: `${FILE_COMMAND_DIR}/summary-${tag}`,
     state: `${FILE_COMMAND_DIR}/state-${tag}`,
   };
-  for (const f of Object.values(files)) await writeFileInContainer(ctx.containerId, f, '');
+  for (const f of Object.values(files)) writeJobFile(ctx, f, '');
   return files;
+}
+
+// The file-command directory is a bind mount of a directory the runner owns,
+// so the files a step appends to are created and read back on the host. This
+// used to go through `docker exec --interactive ... cat`, one exec per file,
+// which has a race: when stdin is closed before the exec has attached, the
+// EOF is lost and cat waits forever, and so did the job, until its timeout.
+// An empty file is the widest case of that window, since there is no data
+// write to sequence against. The files are world-writable because the step
+// appends to them as whatever user the image runs, which need not be the
+// runner's.
+function writeJobFile(ctx: StepExecContext, containerPath: string, content: string): void {
+  const host = ctx.hostPath(containerPath);
+  if (host === null) throw new Error(`${containerPath} is not on a mount the runner can write`);
+  fs.writeFileSync(host, content);
+  try {
+    fs.chmodSync(host, 0o666);
+  } catch {
+    // the runner and the container being the same user, which is the common
+    // case, needs no wider mode
+  }
+}
+
+function readJobFile(ctx: StepExecContext, containerPath: string): string {
+  const host = ctx.hostPath(containerPath);
+  if (host === null) return '';
+  try {
+    return fs.readFileSync(host, 'utf8');
+  } catch {
+    return '';
+  }
 }
 
 function fileCommandEnv(files: FileCommandSet): Record<string, string> {
@@ -289,19 +320,19 @@ async function collectFileCommands(
   files: FileCommandSet,
   stepId: string | undefined
 ): Promise<void> {
-  const outputText = await readFileInContainer(ctx.containerId, files.output);
+  const outputText = readJobFile(ctx, files.output);
   const parsed = parseKeyValueFile(outputText);
   if (stepId && Object.keys(parsed).length) {
     scope.outputs[stepId] = { ...(scope.outputs[stepId] ?? {}), ...parsed };
   }
-  const envText = await readFileInContainer(ctx.containerId, files.envFile);
+  const envText = readJobFile(ctx, files.envFile);
   Object.assign(ctx.rt.env, parseKeyValueFile(envText));
-  const pathText = await readFileInContainer(ctx.containerId, files.pathFile);
+  const pathText = readJobFile(ctx, files.pathFile);
   for (const line of pathText.split('\n')) {
     const p = line.trim();
     if (p !== '' && !ctx.rt.extraPath.includes(p)) ctx.rt.extraPath.unshift(p);
   }
-  const summaryText = await readFileInContainer(ctx.containerId, files.summary);
+  const summaryText = readJobFile(ctx, files.summary);
   if (summaryText.trim() !== '') ctx.rt.summaries.push(summaryText);
 }
 
@@ -405,7 +436,7 @@ async function runShellStep(
   const tag = envFileTag(index);
   const files = await makeFileCommands(ctx, tag);
   const scriptPath = `${FILE_COMMAND_DIR}/step-${tag}`;
-  await writeFileInContainer(ctx.containerId, scriptPath, script.endsWith('\n') ? script : script + '\n');
+  writeJobFile(ctx, scriptPath, script.endsWith('\n') ? script : script + '\n');
 
   const shell = step.shell ?? (scope.depth === 0 ? ctx.spec.defaults?.shell : undefined);
   const env: Record<string, string> = {
