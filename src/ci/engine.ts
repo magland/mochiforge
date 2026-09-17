@@ -7,7 +7,7 @@ import { mintJobToken } from '../jobtoken';
 import { repoIsPrivate } from '../perms';
 import { findRepo, listCollections, listRepoDirs } from '../scan';
 import { globMatch } from '../vault';
-import { ExprEnv, ExprValue, evalCondition, render } from './expr';
+import { ExprEnv, ExprValue, evalCondition, evalGatedCondition, render } from './expr';
 import {
   ManualGrant,
   findMintable,
@@ -768,7 +768,6 @@ export class CiEngine {
     needs: Record<string, { result: string; outputs: Record<string, string> }>,
     st: { allSucceeded: boolean; anyFailed: boolean }
   ): boolean {
-    if (j.if === undefined) return st.allSucceeded;
     const env: ExprEnv = {
       contexts: {
         github: this.githubContext(ar.run, ar.collection, ar.repo, j.key, ''),
@@ -783,7 +782,7 @@ export class CiEngine {
         always: () => true,
       },
     };
-    return evalCondition(j.if, env);
+    return evalGatedCondition(j.if, st.allSucceeded, env);
   }
 
   private completeJob(ar: ActiveRun, j: JobRecord, conclusion: Conclusion): void {

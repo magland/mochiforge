@@ -496,3 +496,15 @@ export function evalCondition(cond: string, env: ExprEnv): boolean {
 export function mentionsStatusOverride(cond: string): boolean {
   return /\b(always|failure|cancelled)\s*\(/.test(cond);
 }
+
+// An `if:` on a step or a job, judged with the status of what came before it.
+// GitHub prepends an implicit `success() &&` unless the condition itself
+// names a status function, so once something has failed a plain
+// `if: github.ref == 'refs/heads/main'` skips however the comparison comes
+// out, while `if: always()` and `if: failure()` are judged on their own
+// terms. An absent condition is the bare gate.
+export function evalGatedCondition(cond: string | undefined, succeeded: boolean, env: ExprEnv): boolean {
+  if (cond === undefined) return succeeded;
+  if (!succeeded && !mentionsStatusOverride(cond)) return false;
+  return evalCondition(cond, env);
+}

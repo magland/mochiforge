@@ -2,7 +2,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ActionRef, parseActionRef } from '../ci/actionref';
-import { ExprEnv, evalCondition, render, renderDeep, stringify } from '../ci/expr';
+import { ExprEnv, evalCondition, evalGatedCondition, render, renderDeep, stringify } from '../ci/expr';
 import { JobSpec } from '../ci/protocol';
 import { WorkflowStep } from '../ci/workflow';
 import { ActionDef, ActionError, ActionStore, ResolvedAction, inputEnvName, resolveInputs } from './actions';
@@ -118,9 +118,11 @@ export async function runSteps(
       functions: statusFunctions(failed || ctx.status().failed, ctx.status().cancelled),
     });
 
+    // A step that failed under continue-on-error never set `failed`, so it
+    // does not close the gate for the steps after it.
     let shouldRun: boolean;
     try {
-      shouldRun = step.if === undefined ? !failed : evalCondition(step.if, evalEnv());
+      shouldRun = evalGatedCondition(step.if, !failed, evalEnv());
     } catch (e) {
       ctx.log(`Error evaluating if: ${e instanceof Error ? e.message : String(e)}`);
       failed = true;
