@@ -970,7 +970,7 @@ export function registerCiApi(app: Express, root: string, engine: CiEngine, auth
       return;
     }
     if (settings.source !== 'actions') {
-      apiError(res, 403, `the site for ${a.collection}/${a.repo} is published from ${describeSiteSource(settings.source)}, not by workflow deploys; set its site source to workflow deploys first`);
+      apiError(res, 403, `the site for ${a.collection}/${a.repo} is published by ${describeSiteSource(settings.source)}, not by workflow deploys; set its site source to workflow deploys first`);
       return;
     }
     const body = (req.body ?? {}) as Record<string, unknown>;

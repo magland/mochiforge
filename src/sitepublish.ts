@@ -23,15 +23,15 @@ import { SiteSettings, SiteSource, siteSettings } from './sitesettings';
 
 export class SitePublishError extends Error {}
 
-/** A short description of a site source, for messages that name it. */
+/** How a site source publishes, for a message of the form "published by ...". */
 export function describeSiteSource(source: SiteSource): string {
   switch (source) {
     case 'actions':
       return 'workflow deploys';
     case 'repository':
-      return "the repository's contents";
+      return 'the repository itself, from its default branch';
     default:
-      return 'copied files';
+      return 'copying files';
   }
 }
 
