@@ -105,7 +105,7 @@ GET    /api/topics                                 every topic in use, with how 
                                                    the caller may see carry each
 POST   /api/repos                                  create   {collection, name, description?, initReadme?, private?}
 PATCH  /api/repos/:c/:r                            settings {description?, topics?, defaultBranch?, upstream?, private?,
-                                                             siteEnabled?, siteSource?, siteLabel?, siteDomain?}
+                                                             siteEnabled?, siteSource?, sitePath?, siteLabel?, siteDomain?}
                                                    (private and the site settings take the admin role,
                                                    siteDomain a site admin; the rest take write;
                                                    upstream is an https or ssh git URL, '' clears it;
@@ -140,7 +140,7 @@ Branch and tag deletion take the name as a wildcard path segment, because a ref 
 
 `?confirm=` on delete is the API's equivalent of the web's typed confirmation. It costs nothing and it makes an accidental `DELETE` from a loop over a listing impossible.
 
-The site route is read only. Publishing a site is a workflow's job or a file copy into the vault; an upload path here would be a second way to write the one directory whose contents are served to browsers (see [Sites](sites.md)). What PATCH changes is the settings around that directory: `siteEnabled` is the switch (a site is opt-in, and off nothing is served and workflow deploys are refused), `siteSource` is `"copy"` or `"actions"` and gates the deploy endpoint, `siteLabel` picks the label under the vault's sites host with `""` restoring the derived `<repo>--<alias>`, and `siteDomain` attaches a custom domain with `""` detaching it. A label or domain another repository holds is refused with 409, naming the holder, as is one of the labels the vault reserves for its operator. `GET /api/repos/:c/:r` and the site route both carry the resulting `site` object: `{enabled, source, label, domain, url}`.
+The site route is read only. Publishing a site is a workflow's job or a file copy into the vault; an upload path here would be a second way to write the one directory whose contents are served to browsers (see [Sites](sites.md)). What PATCH changes is the settings around that directory: `siteEnabled` is the switch (a site is opt-in, and off nothing is served and workflow deploys are refused), `siteSource` is `"copy"`, `"actions"`, or `"repository"` and gates who writes the directory (the last has the server publish the default branch itself on every push; see [Sites](sites.md)), `sitePath` is the directory within the branch a `"repository"` site is taken from with `""` for the root, `siteLabel` picks the label under the vault's sites host with `""` restoring the derived `<repo>--<alias>`, and `siteDomain` attaches a custom domain with `""` detaching it. A label or domain another repository holds is refused with 409, naming the holder, as is one of the labels the vault reserves for its operator. `GET /api/repos/:c/:r` and the site route both carry the resulting `site` object: `{enabled, source, path, label, domain, url}`. A PATCH that touched the site settings or the default branch of a `"repository"` site also carries `sitePublish`: `{files}` when the site was written, `{error}` when it could not be, and `null` when the settings did not ask for a publish.
 
 ## Contents and history
 

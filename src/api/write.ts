@@ -42,7 +42,8 @@ import {
 } from '../perms';
 import { clearRepoDomain, repoDomain, setRepoDomain } from '../domains';
 import { findRepo, isValidName, reservedRepoSuffix, upstreamOf } from '../scan';
-import { editSiteSettings, isUsableSiteLabel, siteLabelConflict, siteSettings } from '../sitesettings';
+import { editSiteSettings, isUsableSiteLabel, siteLabelConflict, siteSettings, isSiteSource, isUsableSitePath, normalizeSitePath } from '../sitesettings';
+import { publishSiteForSettings } from '../sitepublish';
 import { isReservedSiteLabel } from '../siteshost';
 import { repoTopics, setTopics } from '../topics';
 import { loadVault } from '../vault';
@@ -473,8 +474,14 @@ export function registerWriteApi(
       return;
     }
     const siteSource = body.siteSource;
-    if (siteSource !== undefined && siteSource !== 'copy' && siteSource !== 'actions') {
-      apiError(res, 400, '"siteSource" must be "copy" or "actions"');
+    if (siteSource !== undefined && !isSiteSource(siteSource)) {
+      apiError(res, 400, '"siteSource" must be "copy", "actions", or "repository"');
+      return;
+    }
+    const sitePathRaw = stringField(body, 'sitePath');
+    const sitePath = sitePathRaw === null ? null : normalizeSitePath(sitePathRaw);
+    if (sitePath !== null && !isUsableSitePath(sitePath)) {
+      apiError(res, 400, '"sitePath" must be a relative directory within the tree, such as "docs", or "" for the root');
       return;
     }
     const siteLabel = stringField(body, 'siteLabel');
@@ -491,7 +498,7 @@ export function registerWriteApi(
       return;
     }
     const siteDomain = stringField(body, 'siteDomain');
-    const changingSite = siteEnabled !== undefined || siteSource !== undefined || siteLabel !== null;
+    const changingSite = siteEnabled !== undefined || siteSource !== undefined || siteLabel !== null || sitePath !== null;
     if (
       description === null &&
       defaultBranch === null &&
@@ -504,7 +511,7 @@ export function registerWriteApi(
       apiError(
         res,
         400,
-        'nothing to change; provide "description", "defaultBranch", "upstream", "topics", "private", "siteEnabled", "siteSource", "siteLabel", and/or "siteDomain"'
+        'nothing to change; provide "description", "defaultBranch", "upstream", "topics", "private", "siteEnabled", "siteSource", "sitePath", "siteLabel", and/or "siteDomain"'
       );
       return;
     }
@@ -550,10 +557,16 @@ export function registerWriteApi(
           if (siteEnabled !== undefined) s.enabled = siteEnabled;
           if (siteSource !== undefined) s.source = siteSource;
           if (siteLabel !== null) s.label = siteLabel;
+          if (sitePath !== null) s.path = sitePath;
         });
       }
       const branches = await ctx.repo.listRefs('heads');
       const settings = siteSettings(ctx.repo.dir);
+      // A site published from the repository is rewritten whenever what it
+      // should hold may have changed: the site settings, or the branch it
+      // follows. The publish's outcome rides in the response rather than
+      // failing it, since the settings themselves were saved.
+      const sitePublish = changingSite || defaultBranch !== null ? await publishSiteForSettings(root, ctx.repo) : null;
       res.json({
         collection: ctx.repo.collection,
         name: ctx.repo.name,
@@ -564,9 +577,11 @@ export function registerWriteApi(
         site: {
           enabled: settings.enabled,
           source: settings.source,
+          path: settings.path,
           label: settings.label === '' ? null : settings.label,
           domain: repoDomain(root, ctx.repo.collection, ctx.repo.name),
         },
+        sitePublish,
         changed: true,
       });
     } catch (e) {

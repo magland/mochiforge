@@ -118,6 +118,8 @@ mochi repo list --topic webgpu                 # only repositories carrying a to
 mochi repo edit --upstream https://github.com/owner/repo   # record what mochi sync and pr export use
 mochi repo edit --enable-site                  # serve the <repo>.site directory (admin role)
 mochi repo edit --site-source actions          # let a workflow's deploy-pages step publish it
+mochi repo edit --site-source repository        # publish the default branch itself, on every push
+mochi repo edit --site-path docs               # ... from this directory of it ('' for the root)
 mochi repo edit --site-label myapp             # myapp.<sites host> instead of <repo>--<alias>
 mochi repo edit --site-domain docs.example.org # a domain of the site's own (site admin)
 mochi repo fork demo/proj myfork

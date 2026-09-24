@@ -26,7 +26,7 @@ import { makeBareRepo, makeVaultDir } from './helpers';
 test('a repository with no site.json publishes nothing: the strict opt-in default', () => {
   const root = makeVaultDir();
   const dir = makeBareRepo(root, 'demo', 'webapp');
-  assert.deepEqual(siteSettings(dir), { enabled: false, source: 'copy', label: '' });
+  assert.deepEqual(siteSettings(dir), { enabled: false, source: 'copy', label: '', path: '' });
 });
 
 test('normalization keeps only what it recognises, and fails closed on garbage', () => {
@@ -34,9 +34,9 @@ test('normalization keeps only what it recognises, and fails closed on garbage',
   const dir = makeBareRepo(root, 'demo', 'webapp');
   const file = path.join(dir, SITE_SETTINGS_FILE);
   fs.writeFileSync(file, JSON.stringify({ enabled: 'yes', source: 'branch', label: 'Bad_Label' }));
-  assert.deepEqual(siteSettings(dir), { enabled: false, source: 'copy', label: '' });
+  assert.deepEqual(siteSettings(dir), { enabled: false, source: 'copy', label: '', path: '' });
   fs.writeFileSync(file, 'not json at all: an unreadable grant grants nothing');
-  assert.deepEqual(siteSettings(dir), { enabled: false, source: 'copy', label: '' });
+  assert.deepEqual(siteSettings(dir), { enabled: false, source: 'copy', label: '', path: '' });
 });
 
 test('editSiteSettings round-trips, and the read sees the write immediately', () => {
@@ -47,11 +47,11 @@ test('editSiteSettings round-trips, and the read sees the write immediately', ()
     s.source = 'actions';
     s.label = 'my-app';
   });
-  assert.deepEqual(siteSettings(dir), { enabled: true, source: 'actions', label: 'my-app' });
+  assert.deepEqual(siteSettings(dir), { enabled: true, source: 'actions', label: 'my-app', path: '' });
   editSiteSettings(dir, (s) => {
     s.enabled = false;
   });
-  assert.deepEqual(siteSettings(dir), { enabled: false, source: 'actions', label: 'my-app' });
+  assert.deepEqual(siteSettings(dir), { enabled: false, source: 'actions', label: 'my-app', path: '' });
 });
 
 test('a usable label is a single DNS label with no double hyphen', () => {

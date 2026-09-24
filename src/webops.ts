@@ -41,7 +41,11 @@ import {
   siteLabelConflict,
   siteSettings,
   storedCollectionAlias,
+  isSiteSource,
+  isUsableSitePath,
+  normalizeSitePath,
 } from './sitesettings';
+import { publishSiteAfterPush, publishSiteForSettings } from './sitepublish';
 import {
   Viewer,
   clearSessionCookie,
@@ -2141,6 +2145,7 @@ export function registerWebOps(
           {
             enabled: settings.enabled,
             source: settings.source,
+            path: settings.path,
             label: settings.label,
             domain: repoDomain(root, loaded.repo.collection, loaded.repo.name),
             sitesHost,
@@ -2196,6 +2201,8 @@ export function registerWebOps(
           return;
         }
         await ops.setDefaultBranch(loaded.repo.dir, defaultBranch);
+        // A site that follows the default branch now follows this one.
+        await publishSiteAfterPush(root, loaded.repo, `refs/heads/${defaultBranch}`);
       }
       res.redirect(settingsBack(loaded.repo, 'general', 'Settings saved.'));
     })
@@ -2338,8 +2345,13 @@ export function registerWebOps(
         }
       }
       const source = field(req, 'source');
-      if (body.source !== undefined && source !== 'copy' && source !== 'actions') {
-        fail(res, 400, 'The site source must be copied files or workflow deploys.', viewer, backUrl);
+      if (body.source !== undefined && !isSiteSource(source)) {
+        fail(res, 400, 'The site source must be copied files, workflow deploys, or repository contents.', viewer, backUrl);
+        return;
+      }
+      const sitePath = body.path !== undefined ? normalizeSitePath(field(req, 'path')) : null;
+      if (sitePath !== null && !isUsableSitePath(sitePath)) {
+        fail(res, 400, 'The directory must be a relative path within the repository, such as docs, or empty for the root.', viewer, backUrl);
         return;
       }
       if (body.domain !== undefined) {
@@ -2364,20 +2376,29 @@ export function registerWebOps(
           }
         }
       }
-      const changingSettings = body.enabled !== undefined || body.source !== undefined || body.label !== undefined;
+      const changingSettings = body.enabled !== undefined || body.source !== undefined || body.label !== undefined || sitePath !== null;
       const settings = changingSettings
         ? editSiteSettings(loaded.repo.dir, (s) => {
             if (body.enabled !== undefined) s.enabled = field(req, 'enabled') === 'true';
-            if (body.source !== undefined) s.source = source as 'copy' | 'actions';
+            if (body.source !== undefined && isSiteSource(source)) s.source = source;
             if (body.label !== undefined) s.label = label;
+            if (sitePath !== null) s.path = sitePath;
           })
         : siteSettings(loaded.repo.dir);
-      const msg =
+      let msg =
         body.enabled !== undefined
           ? settings.enabled
             ? 'The site is now enabled: the files in its site directory are served to everyone.'
             : 'The site is now disabled: its files stay on disk but nothing is served, and workflow deploys are refused.'
           : 'Site settings saved.';
+      // A site published from the repository is written now, so that
+      // enabling it or pointing it at a directory takes effect without
+      // waiting for the next push; the outcome is part of the message.
+      if (changingSettings) {
+        const published = await publishSiteForSettings(root, loaded.repo);
+        if (published && 'files' in published) msg += ` The site was published from the repository: ${published.files} file(s).`;
+        else if (published) msg += ` The site could not be published from the repository: ${published.error}.`;
+      }
       res.redirect(settingsBack(loaded.repo, 'site', msg));
     })
   );

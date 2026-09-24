@@ -1,4 +1,5 @@
 import { findRepo } from '../scan';
+import { publishSiteAfterPush } from '../sitepublish';
 import { CiEngine } from './engine';
 
 // One place that turns a branch having moved into a workflow event.
@@ -26,10 +27,12 @@ export function firePush(
   after: string,
   actor: string
 ): void {
-  if (!engine) return;
   const gitRepo = findRepo(root, repo.collection, repo.name);
   if (!gitRepo) return;
-  engine
-    .handlePush(gitRepo, { ref: `refs/heads/${branch}`, before: before ?? ZERO, after, actor })
+  const ref = `refs/heads/${branch}`;
+  // The site first, then CI: a site published from the repository follows
+  // the branch whichever door the commit came through, engine or no engine.
+  publishSiteAfterPush(root, gitRepo, ref)
+    .then(() => engine?.handlePush(gitRepo, { ref, before: before ?? ZERO, after, actor }))
     .catch((e) => console.error(`CI trigger failed: ${e instanceof Error ? e.message : e}`));
 }

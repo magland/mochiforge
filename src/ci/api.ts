@@ -4,6 +4,7 @@ import * as path from 'path';
 import { AuthLimiter } from '../limit';
 import { findRepo, isValidName } from '../scan';
 import { siteSettings } from '../sitesettings';
+import { describeSiteSource } from '../sitepublish';
 import { siteHostUrl } from '../site';
 import { canAdminRunnerGlobs, isSiteAdmin } from '../perms';
 import { AuthResult, authenticateToken, loadVault } from '../vault';
@@ -969,7 +970,7 @@ export function registerCiApi(app: Express, root: string, engine: CiEngine, auth
       return;
     }
     if (settings.source !== 'actions') {
-      apiError(res, 403, `the site for ${a.collection}/${a.repo} is published by copying files, not by workflow deploys; set its site source to workflow deploys first`);
+      apiError(res, 403, `the site for ${a.collection}/${a.repo} is published from ${describeSiteSource(settings.source)}, not by workflow deploys; set its site source to workflow deploys first`);
       return;
     }
     const body = (req.body ?? {}) as Record<string, unknown>;

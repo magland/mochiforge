@@ -39,7 +39,7 @@ function siteSummary(data: Record<string, unknown>): string {
   const site = data.site as { enabled?: boolean; source?: string; url?: string } | undefined;
   if (!site) return data.hasSite ? 'yes' : 'no';
   if (!site.enabled) return 'off';
-  const source = site.source === 'actions' ? ', deployed by workflows' : '';
+  const source = site.source === 'actions' ? ', deployed by workflows' : site.source === 'repository' ? ', published from the repository' : '';
   return `${site.url ?? 'on'}${source}`;
 }
 
@@ -186,7 +186,9 @@ repository first. A topic is lowercase letters, digits, and hyphens.
 
 The site settings take the admin role. --enable-site serves the repository's
 <repo>.site directory; --site-source actions additionally lets a workflow's
-deploy-pages step publish it. --site-label picks the label under the vault's
+deploy-pages step publish it, and --site-source repository has the server
+publish the default branch itself on every push (--site-path picks a
+directory within it, such as docs; '' is the root). --site-label picks the label under the vault's
 sites host ('' goes back to the derived <repo>--<alias>, where the alias stands
 in for the collection's name), and --site-domain attaches a custom domain,
 which takes a site admin ('' detaches it). A label another repository holds, or
@@ -204,7 +206,8 @@ one the vault reserves for its operator, is refused.`,
       { name: 'public', type: 'boolean', summary: 'Make the repository public' },
       { name: 'enable-site', type: 'boolean', summary: 'Serve the repository site (takes the admin role)' },
       { name: 'disable-site', type: 'boolean', summary: 'Stop serving the site; its files stay on disk' },
-      { name: 'site-source', type: 'string', value: '<s>', summary: "How the site is published: 'copy' or 'actions'" },
+      { name: 'site-source', type: 'string', value: '<s>', summary: "How the site is published: 'copy', 'actions', or 'repository'" },
+      { name: 'site-path', type: 'string', value: '<dir>', summary: "Directory published by a 'repository' site; '' for the root" },
       { name: 'site-label', type: 'string', value: '<l>', summary: "Label under the sites host; '' for the default" },
       { name: 'site-domain', type: 'string', value: '<h>', summary: "Custom domain (site admin); '' detaches it" },
       JSON_OPTION,
@@ -223,9 +226,10 @@ one the vault reserves for its operator, is refused.`,
       }
       const siteEnabled = inv.bool('enable-site') ? true : inv.bool('disable-site') ? false : undefined;
       const siteSource = inv.str('site-source');
-      if (siteSource !== null && siteSource !== 'copy' && siteSource !== 'actions') {
-        throw new CliError("--site-source takes 'copy' or 'actions'.", EXIT_USAGE);
+      if (siteSource !== null && siteSource !== 'copy' && siteSource !== 'actions' && siteSource !== 'repository') {
+        throw new CliError("--site-source takes 'copy', 'actions', or 'repository'.", EXIT_USAGE);
       }
+      const sitePath = inv.str('site-path');
       const siteLabel = inv.str('site-label');
       const siteDomain = inv.str('site-domain');
       const set = inv.list('topic');
@@ -252,11 +256,12 @@ one the vault reserves for its operator, is refused.`,
         priv === undefined &&
         siteEnabled === undefined &&
         siteSource === null &&
+        sitePath === null &&
         siteLabel === null &&
         siteDomain === null
       ) {
         throw new CliError(
-          'Nothing to change. Pass --description, --topic, --add-topic, --remove-topic, --clear-topics, --default-branch, --upstream, --private, --public, --enable-site, --disable-site, --site-source, --site-label, or --site-domain.',
+          'Nothing to change. Pass --description, --topic, --add-topic, --remove-topic, --clear-topics, --default-branch, --upstream, --private, --public, --enable-site, --disable-site, --site-source, --site-path, --site-label, or --site-domain.',
           EXIT_USAGE
         );
       }
@@ -268,6 +273,7 @@ one the vault reserves for its operator, is refused.`,
         private: priv,
         siteEnabled,
         siteSource: siteSource ?? undefined,
+        sitePath: sitePath ?? undefined,
         siteLabel: siteLabel ?? undefined,
         siteDomain: siteDomain ?? undefined,
       });
@@ -277,6 +283,9 @@ one the vault reserves for its operator, is refused.`,
         return;
       }
       console.log(`Updated ${data.collection}/${data.name}`);
+      const published = data.sitePublish as { files?: number; error?: string } | null | undefined;
+      if (published?.error) console.error(`The site could not be published from the repository: ${published.error}`);
+      else if (published?.files !== undefined) console.log(`Site published from the repository: ${published.files} file(s)`);
     },
   },
   {

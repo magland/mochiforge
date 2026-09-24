@@ -33,8 +33,13 @@ import {
 //    distinguishes deploying from a workflow from deploying from a branch.
 //    'copy' means files copied into the directory by whatever can write the
 //    vault; 'actions' additionally allows a workflow's deploy-pages step to
-//    publish through the runner API. Serving cannot tell how bytes landed on
-//    disk, so the source gates only that endpoint.
+//    publish through the runner API; 'repository' means the server itself
+//    writes the directory from the default branch's tree, on every push that
+//    moves it (src/sitepublish.ts). Serving cannot tell how bytes landed on
+//    disk, so the source gates only the writers.
+//  - `path` is the directory within the tree that a 'repository' site is
+//    taken from: '' for the root, or a relative path such as `docs` or
+//    `build/site`, the way GitHub Pages offers the root or /docs.
 //  - `label` replaces the derived `<repo>--<alias>` label on the vault's
 //    sites host, for a repository that wants a shorter or different hostname.
 //    Empty means the derived one. A label never contains `--`, which is what
@@ -48,13 +53,40 @@ import {
 // site alias that stands in for a collection's name in a derived hostname, and
 // the naming built on top of both halves.
 
-export type SiteSource = 'copy' | 'actions';
+export type SiteSource = 'copy' | 'actions' | 'repository';
+
+export const SITE_SOURCES: readonly SiteSource[] = ['copy', 'actions', 'repository'];
+
+export function isSiteSource(value: unknown): value is SiteSource {
+  return typeof value === 'string' && (SITE_SOURCES as readonly string[]).includes(value);
+}
 
 export interface SiteSettings {
   enabled: boolean;
   source: SiteSource;
   /** Custom label on the sites host; '' means the derived <repo>--<alias>. */
   label: string;
+  /** For a 'repository' site, the directory within the tree to publish; '' is the root. */
+  path: string;
+}
+
+/**
+ * Whether a string may be stored as the directory a 'repository' site is
+ * published from: empty for the root, or relative path segments of ordinary
+ * filename characters, so `docs` and `build/site` but never `..`, an absolute
+ * path, or a segment that starts with a dot or a dash. The path is later handed to
+ * `git archive` as `<branch>:<path>`, and this grammar is what keeps it a
+ * tree path and nothing git would read as an option or a revision.
+ */
+export function isUsableSitePath(value: string): boolean {
+  if (value === '') return true;
+  if (value.length > 200) return false;
+  return /^[A-Za-z0-9_][A-Za-z0-9._-]*(\/[A-Za-z0-9_][A-Za-z0-9._-]*)*$/.test(value);
+}
+
+/** A directory field as typed by a person, normalized to what isUsableSitePath accepts. */
+export function normalizeSitePath(value: string): string {
+  return value.trim().replace(/^\/+|\/+$/g, '').replace(/\/{2,}/g, '/');
 }
 
 export const SITE_SETTINGS_FILE = 'site.json';
@@ -78,7 +110,7 @@ export function isUsableSiteLabel(label: string): boolean {
 }
 
 function defaults(): SiteSettings {
-  return { enabled: false, source: 'copy', label: '' };
+  return { enabled: false, source: 'copy', label: '', path: '' };
 }
 
 function normalizeSiteSettings(parsed: unknown): SiteSettings {
@@ -86,8 +118,9 @@ function normalizeSiteSettings(parsed: unknown): SiteSettings {
   if (typeof parsed !== 'object' || parsed === null) return out;
   const rec = parsed as Record<string, unknown>;
   if (rec.enabled === true) out.enabled = true;
-  if (rec.source === 'actions') out.source = 'actions';
+  if (rec.source === 'actions' || rec.source === 'repository') out.source = rec.source;
   if (typeof rec.label === 'string' && isUsableSiteLabel(rec.label)) out.label = rec.label;
+  if (typeof rec.path === 'string' && isUsableSitePath(rec.path)) out.path = rec.path;
   return out;
 }
 

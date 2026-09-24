@@ -101,6 +101,25 @@ export async function deploySite(
   if (!tar || !fs.existsSync(tar)) {
     throw new ArtifactError(`no artifact named ${artifactName} in run #${n}`);
   }
+  return installSiteFromTar(root, collection, repo, tar, { unwrapPagesArtifact: true, what: `artifact ${artifactName}` });
+}
+
+/**
+ * Replace a repository's site directory with the contents of a tar archive:
+ * extracted into a scratch directory beside the site, checked for symlinks
+ * that would escape it, and swapped into place in one rename with the
+ * previous site kept until the swap has succeeded. The same path publishes a
+ * workflow's artifact (above) and a 'repository' site's tree
+ * (src/sitepublish.ts); the archive is untrusted in both cases.
+ */
+export async function installSiteFromTar(
+  root: string,
+  collection: string,
+  repo: string,
+  tar: string,
+  opts: { unwrapPagesArtifact: boolean; what: string }
+): Promise<{ files: number }> {
+  if (!isValidName(collection) || !isValidName(repo)) throw new ArtifactError('invalid repository');
   const dir = repoPath(root, collection, `${displayName(repo)}.site`);
   const scratch = `${dir}.incoming-${process.pid}`;
   const previous = `${dir}.previous-${process.pid}`;
@@ -120,7 +139,7 @@ export async function deploySite(
     // artifact holding exactly one artifact.tar is unwrapped once more. This
     // is what makes the real actions/upload-pages-artifact work unchanged.
     const entries = fs.readdirSync(scratch);
-    if (entries.length === 1 && entries[0] === 'artifact.tar') {
+    if (opts.unwrapPagesArtifact && entries.length === 1 && entries[0] === 'artifact.tar') {
       const inner = path.join(scratch, 'artifact.tar');
       const unwrapped = `${scratch}.inner`;
       fs.rmSync(unwrapped, { recursive: true, force: true });
@@ -149,7 +168,7 @@ export async function deploySite(
       }
     };
     walk(scratch);
-    if (files === 0) throw new ArtifactError(`artifact ${artifactName} contains no files`);
+    if (files === 0) throw new ArtifactError(`${opts.what} contains no files`);
 
     fs.rmSync(previous, { recursive: true, force: true });
     const had = fs.existsSync(dir);

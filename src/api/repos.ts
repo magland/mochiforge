@@ -57,12 +57,13 @@ function siteInfo(
   root: string,
   req: Request,
   repo: { collection: string; name: string; dir: string }
-): { enabled: boolean; source: string; label: string | null; domain: string | null; url: string } {
+): { enabled: boolean; source: string; path: string; label: string | null; domain: string | null; url: string } {
   const settings = siteSettings(repo.dir);
   const origin = siteHostUrl(root, req, repo.collection, repo.name);
   return {
     enabled: settings.enabled,
     source: settings.source,
+    path: settings.path,
     label: settings.label === '' ? null : settings.label,
     domain: repoDomain(root, repo.collection, repo.name),
     url: origin

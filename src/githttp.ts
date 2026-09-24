@@ -8,6 +8,7 @@ import { grantCovers, verifyJobToken } from './jobtoken';
 import { OpError, createRepo, opErrorStatus } from './ops';
 import { atLeast, canCreateRepo, canReadRepo, repoIsPrivate, repoRole } from './perms';
 import { displayName, findRepo, isDotName, isValidName, reservedRepoSuffix } from './scan';
+import { publishSiteAfterPush } from './sitepublish';
 import { AuthLimiter, BUSY_RETRY_SECONDS, Gates } from './limit';
 import { AuthResult, authenticate, authenticateToken, loadVault } from './vault';
 import { ah } from './web';
@@ -468,19 +469,22 @@ export function registerGitHttp(app: Express, root: string, gates: Gates, authLi
       await runService(req, res, 'git-receive-pack', repo.dir, (code) => {
         if (code !== 0) return;
         ensureHead(target)
-          .then(() => (engine ? firePushEvents(engine, target, before, actor) : undefined))
+          .then(() => firePushEvents(root, engine, target, before, actor))
           .catch((e) => console.error(`post-receive handling failed: ${e instanceof Error ? e.message : e}`));
       });
     })
   );
 }
 
-// Turn a before/after ref snapshot into push events for the CI engine. Ref
-// deletions are reported (with an all-zero "after") and ignored downstream;
-// a workflow file that fails to parse still produces a visible failed run,
-// which is why nothing here filters on content.
+// Turn a before/after ref snapshot into push events: a site published from the
+// repository is rewritten when its branch moved, and the CI engine, when there
+// is one, is told about every moved ref. Ref deletions are reported (with an
+// all-zero "after") and ignored downstream; a workflow file that fails to
+// parse still produces a visible failed run, which is why nothing here
+// filters on content.
 async function firePushEvents(
-  engine: CiEngine,
+  root: string,
+  engine: CiEngine | undefined,
   repo: GitRepo,
   before: Map<string, string>,
   actor: string
@@ -488,6 +492,7 @@ async function firePushEvents(
   const after = await refSnapshot(repo);
   for (const [ref, sha] of after) {
     if (before.get(ref) === sha) continue;
-    await engine.handlePush(repo, { ref, before: before.get(ref) ?? ZERO, after: sha, actor });
+    await publishSiteAfterPush(root, repo, ref);
+    if (engine) await engine.handlePush(repo, { ref, before: before.get(ref) ?? ZERO, after: sha, actor });
   }
 }

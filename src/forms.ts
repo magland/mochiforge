@@ -9,6 +9,7 @@ import { formatSize, timeTag } from './render';
 import { Viewer } from './session';
 import { Theme } from './themes';
 import { isSiteAdmin } from './perms';
+import type { SiteSource } from './sitesettings';
 import { sanitizedSiteLabel } from './siteshost';
 import { GithubAccount, UserProfile, UserRecord, passkeyBinding, tokenId } from './vault';
 import {
@@ -791,7 +792,9 @@ export function conflictPage(ctx: RepoCtx, branch: string, retryUrl: string): st
 /** What the settings page's Site box shows; gathered by the route. */
 export interface SettingsSiteInfo {
   enabled: boolean;
-  source: 'copy' | 'actions';
+  source: SiteSource;
+  /** For a 'repository' site, the directory within the tree it is published from; '' for the root. */
+  path: string;
   /** The custom label on the sites host, '' for the derived one. */
   label: string;
   /** The custom domain a vault admin attached, or null. */
@@ -922,7 +925,9 @@ ${csrfField(ctx.viewer!)}
   const siteStatus = site.enabled
     ? site.dirExists
       ? html`This repository's site is <b>enabled</b>, served at <a href="${ctx.siteUrl}">${ctx.siteUrl}</a>.`
-      : html`This repository's site is <b>enabled</b>, but there are no site files yet: copy them into <span class="mono">${ctx.repo}.site</span> next to the repository, or have a workflow deploy them.`
+      : site.source === 'repository'
+        ? html`This repository's site is <b>enabled</b> and follows the default branch, but nothing has been published yet: push to the branch, or save the settings below to publish it now.`
+        : html`This repository's site is <b>enabled</b>, but there are no site files yet: copy them into <span class="mono">${ctx.repo}.site</span> next to the repository, or have a workflow deploy them.`
     : site.dirExists
       ? html`This repository's site is <b>disabled</b>. The files in <span class="mono">${ctx.repo}.site</span> stay on disk but are not served; enabling the site brings them straight back.`
       : html`This repository's site is <b>disabled</b>. Enabling it serves static files from a <span class="mono">${ctx.repo}.site</span> directory next to the repository, with an index.html at its root.`;
@@ -953,7 +958,9 @@ ${csrfField(ctx.viewer!)}
 <div class="field"><label for="siteSource">Published by</label><select id="siteSource" name="source">
 <option value="copy"${site.source === 'copy' ? raw(' selected') : ''}>Copied files</option>
 <option value="actions"${site.source === 'actions' ? raw(' selected') : ''}>Workflow deploys</option>
-</select><p class="muted small">Copied files means whatever can write the vault publishes by writing the directory, and a workflow's deploy step is refused. Workflow deploys additionally lets a run's <span class="mono">deploy-pages</span> step publish the site.</p></div>
+<option value="repository"${site.source === 'repository' ? raw(' selected') : ''}>Repository contents</option>
+</select><p class="muted small">Copied files means whatever can write the vault publishes by writing the directory, and a workflow's deploy step is refused. Workflow deploys additionally lets a run's <span class="mono">deploy-pages</span> step publish the site. Repository contents means the server publishes the default branch itself, again on every push that moves it; a <span class="mono">.gitattributes</span> line such as <span class="mono">notes.txt export-ignore</span> keeps a file out.</p></div>
+<div class="field"><label for="sitePath">Directory</label><input id="sitePath" name="path" value="${site.path}" placeholder="(root of the repository)"><p class="muted small">For repository contents: the directory within the branch to publish, such as <span class="mono">docs</span>. Empty publishes the whole tree.</p></div>
 ${labelField}
 ${domainField}
 <button type="submit" class="btn btn-primary">${icon('check')}<span>Save</span></button>

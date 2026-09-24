@@ -43,6 +43,14 @@ A missing or unreadable file reads as disabled. Note that this makes sites stric
 
 - `"copy"` (the default): whatever can write the vault publishes by writing the directory, and the runner's `deploy-pages` endpoint is refused.
 - `"actions"`: a workflow run's `deploy-pages` step may publish the site too. See [Workflows](workflows.md).
+- `"repository"`: the server publishes the site itself from the repository's default branch, and publishes it again on every push that moves that branch, whether the push came over git, from the web editor, or through the API. This is what GitHub Pages calls deploying from a branch, and it is the mode for a site that is plain files in the repository and needs no build: the push is the deploy, and no runner and no shell on the vault's host are involved. `path` names a directory within the branch to publish instead of the whole tree, such as `docs`; empty means the root.
+
+```bash
+mochi repo edit alice/webapp --enable-site --site-source repository
+mochi repo edit alice/webapp --site-path docs        # publish the docs directory instead of the root
+```
+
+A `"repository"` site is written the way a workflow deploy is: the tree is taken with `git archive`, so a `.gitattributes` line such as `notes.txt export-ignore` keeps a file out of the site, it is extracted beside the site directory, symlinks that would resolve outside it are removed, and the new site replaces the old one in a single rename, so a failed publish leaves the previous site in place. Saving the site settings publishes at once, so enabling the mode or changing the directory takes effect without waiting for a push, and the settings page and the API's `PATCH` say what happened (`sitePublish` in the response: the number of files, or why it could not be done, such as a directory the branch does not have). Changing the default branch republishes from the new one.
 
 ## Site content is untrusted code
 
