@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { clearLogin, credentialTarget, loadLogin, readCredential, rejectCredential } from './credentials';
 import { backupLineFor } from './cli/backup-cmd';
+import { naming } from './naming';
 import { mintToken } from './vault';
 
 // `mochi deploy fly`: put a vault on Fly.io from one command, and deploy
@@ -19,8 +20,6 @@ import { mintToken } from './vault';
 // why there is no fly.toml in this repository to keep in sync or to explain.
 
 export const IMAGE_REPO = 'ghcr.io/magland/mochi';
-const VOLUME_NAME = 'vault';
-const OWNER_TOKEN_SECRET = 'MOCHI_OWNER_TOKEN';
 const INTERNAL_PORT = 3000;
 
 interface FlyResult {
@@ -361,10 +360,6 @@ export async function namedVolume(app: string, name: string): Promise<VolumeInfo
   return vols.find((v) => v.name === name) ?? null;
 }
 
-async function vaultVolume(app: string): Promise<VolumeInfo | null> {
-  return namedVolume(app, VOLUME_NAME);
-}
-
 export async function machines(app: string): Promise<MachineInfo[]> {
   return (await flyJson<MachineInfo[]>(['machines', 'list', '-a', app])) ?? [];
 }
@@ -386,10 +381,84 @@ export async function secretNames(app: string): Promise<string[]> {
   return secrets.map((s) => s.Name ?? s.name ?? '').filter(Boolean);
 }
 
+// ---- what differs between applications ----
+
+/**
+ * What one application needs said about itself for these commands to deploy
+ * it. The procedure - an app, one volume, one machine, an owner token minted
+ * here and adopted by the server, settings read back off the live app - is
+ * the same for every application built on these modules; what an image is
+ * called, where it mounts, how it is built from source, and what to tell the
+ * operator afterwards are not. Mochi's own is MOCHI_DEPLOY, below; the
+ * product name, the root noun, and the environment prefix come from
+ * src/naming.ts as everywhere else.
+ */
+export interface DeployProfile {
+  /** The published image, without a tag. */
+  imageRepo: string;
+  /** The version whose image is deployed unless --image says otherwise. */
+  version(): string;
+  /**
+   * The directory `--from-source` builds, holding a Dockerfile, and what to
+   * do with it afterwards. A checkout is usually both the context and the
+   * source; an application whose build needs more than its own checkout
+   * assembles a context and removes it again.
+   */
+  buildContext(): { dir: string; cleanup(): void };
+  /** The Fly volume's name, and where the root directory is mounted. */
+  volumeName: string;
+  mountPath: string;
+  /** Whether `--lfs-bucket` means anything to this application. */
+  lfsBucket: boolean;
+  /** How Fly's proxy counts load against the one machine. */
+  concurrency: { type: 'requests' | 'connections'; soft: number; hard: number };
+  /** What a destroy takes with it, for its confirmation: "repositories, issues, ...". */
+  contents: string;
+  /** Printed after the owner token once a fresh deploy answers: how to begin. */
+  firstSteps(url: string, username: string): string[];
+}
+
+export const MOCHI_DEPLOY: DeployProfile = {
+  imageRepo: IMAGE_REPO,
+  version: ownVersion,
+  buildContext: () => ({ dir: sourceRoot(), cleanup: () => undefined }),
+  volumeName: 'vault',
+  mountPath: '/vault',
+  lfsBucket: true,
+  concurrency: { type: 'requests', soft: 200, hard: 250 },
+  contents: 'repositories, issues, pull requests, users',
+  firstSteps: (url, username) => [
+    `To administer the vault in a browser, open its sign-in page and give that token as`,
+    `'${username}':`,
+    '',
+    `  ${url}/login`,
+    '',
+    'The form asks for a username and a token, since a vault has no passwords. From',
+    'there the Admin page creates the users and the repositories, which is the usual',
+    'way to bootstrap a fresh vault.',
+    '',
+    "To use the CLI and git instead, hand the same token to git's credential store,",
+    'which is what login is for:',
+    '',
+    `  mochi login ${url}`,
+    '',
+    'It asks for the token without echoing it, checks it, and remembers this vault, so',
+    'these need no arguments afterwards and git stops asking on a push:',
+    '',
+    '  mochi whoami',
+    '  mochi user add alice',
+    `  mochi import https://github.com/someone/something.git mine`,
+  ],
+};
+
+function volumeOf(app: string, profile: DeployProfile): Promise<VolumeInfo | null> {
+  return namedVolume(app, profile.volumeName);
+}
+
 /** What Fly currently has, so that a flag-less redeploy changes nothing and one flag changes one thing. */
-async function liveSettings(app: string): Promise<Partial<Settings>> {
+async function liveSettings(app: string, profile: DeployProfile): Promise<Partial<Settings>> {
   const out: Partial<Settings> = {};
-  const vol = await vaultVolume(app);
+  const vol = await volumeOf(app, profile);
   if (vol) {
     out.region = vol.region;
     out.volumeGb = vol.size_gb;
@@ -420,21 +489,22 @@ function resolveSettings(a: DeployArgs, live: Partial<Settings>): Settings {
 // auto-start here. A second machine would mean a second volume and a second
 // vault, diverging silently from the first. For the same reason, a busier vault
 // wants a bigger machine rather than more of them.
-function flyToml(app: string, s: Settings): string {
-  return `# Generated by mochi deploy for '${app}'. Written to a temporary
+function flyToml(app: string, s: Settings, profile: DeployProfile): string {
+  const c = profile.concurrency;
+  return `# Generated by ${naming.product} deploy for '${app}'. Written to a temporary
 # directory for the length of one deploy; edit the deploy command, not this.
 app = "${app}"
 primary_region = "${s.region}"
 
 [mounts]
-  source = "${VOLUME_NAME}"
-  destination = "/vault"
+  source = "${profile.volumeName}"
+  destination = "${profile.mountPath}"
 
 # Fly always terminates TLS in front, so the forwarded headers are the only place
-# the real scheme and address appear. The server records this in the vault's
+# the real scheme and address appear. The server records this in the ${naming.rootNoun}'s
 # config.json on the next start, where it can be changed by hand afterwards.
 [env]
-  MOCHI_TRUST_PROXY = "1"
+  ${naming.envPrefix}_TRUST_PROXY = "1"
 
 [http_service]
   internal_port = ${INTERNAL_PORT}
@@ -443,9 +513,9 @@ primary_region = "${s.region}"
   auto_start_machines = true
   min_machines_running = 0
   [http_service.concurrency]
-    type = "requests"
-    hard_limit = 250
-    soft_limit = 200
+    type = "${c.type}"
+    hard_limit = ${c.hard}
+    soft_limit = ${c.soft}
 
 [[vm]]
   cpu_kind = "${s.cpuKind}"
@@ -454,10 +524,10 @@ primary_region = "${s.region}"
 `;
 }
 
-function writeTempConfig(app: string, s: Settings): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mochi-deploy-'));
+function writeTempConfig(app: string, s: Settings, profile: DeployProfile): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${naming.product}-deploy-`));
   const file = path.join(dir, 'fly.toml');
-  fs.writeFileSync(file, flyToml(app, s));
+  fs.writeFileSync(file, flyToml(app, s, profile));
   return file;
 }
 
@@ -476,6 +546,7 @@ async function waitForVault(
   token: string,
   seconds = 120
 ): Promise<{ ok: true; username: string } | { ok: false; reason: string }> {
+  const noun = naming.rootNoun;
   const deadline = Date.now() + seconds * 1000;
   let last = 'no answer yet';
   while (Date.now() < deadline) {
@@ -484,11 +555,11 @@ async function waitForVault(
       if (resp.ok) {
         const data = (await resp.json()) as { username?: unknown };
         if (typeof data.username === 'string' && data.username) return { ok: true, username: data.username };
-        last = 'the vault answered without saying who the token belongs to';
+        last = `the ${noun} answered without saying who the token belongs to`;
       } else if (resp.status === 401 || resp.status === 403) {
         // Conclusive rather than worth retrying: the server is up and has
         // rejected this token, which means the vault was initialized before.
-        return { ok: false, reason: `the vault did not accept the new owner token (HTTP ${resp.status})` };
+        return { ok: false, reason: `the ${noun} did not accept the new owner token (HTTP ${resp.status})` };
       } else {
         last = `HTTP ${resp.status} from ${url}`;
       }
@@ -500,17 +571,27 @@ async function waitForVault(
   return { ok: false, reason: `timed out after ${seconds}s: ${last}` };
 }
 
-export async function deployFlyCmd(args: string[], usage: () => never): Promise<void> {
+export async function deployFlyCmd(
+  args: string[],
+  usage: () => never,
+  profile: DeployProfile = MOCHI_DEPLOY
+): Promise<void> {
+  const product = naming.product;
+  const noun = naming.rootNoun;
+  const ownerTokenSecret = `${naming.envPrefix}_OWNER_TOKEN`;
   const a = parseDeployArgs(args, usage);
   if (!a.app) {
     die(
       'Which app? Fly app names are globally unique, and the name becomes the URL:\n\n' +
-        '  mochi deploy fly my-vault-name    ->  https://my-vault-name.fly.dev\n'
+        `  ${product} deploy fly my-${noun}-name    ->  https://my-${noun}-name.fly.dev\n`
     );
   }
   const app = a.app;
   if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(app)) {
     die(`Not a valid Fly app name: ${app}\nUse lowercase letters, digits, and dashes.`);
+  }
+  if (a.lfsBucket && !profile.lfsBucket) {
+    die(`--lfs-bucket provisions storage for Git LFS objects, and a ${noun} keeps none.`);
   }
 
   // What gets deployed: a published image to pull, or this checkout to build.
@@ -522,14 +603,21 @@ export async function deployFlyCmd(args: string[], usage: () => never): Promise<
   if (a.localBuild && !a.fromSource) {
     die('--local-build says how to build, and without --from-source there is nothing to build.');
   }
-  const buildRoot = a.fromSource ? sourceRoot() : null;
-  const image = buildRoot === null ? a.image ?? `${IMAGE_REPO}:${ownVersion()}` : null;
+  // The build context is settled here, before anything reaches the network,
+  // so a machine that cannot build (an installed package rather than a
+  // checkout) is told so before an app exists. An application that assembles
+  // a context in a temporary directory gets it removed however this command
+  // ends, since die() exits without unwinding.
+  const build = a.fromSource ? profile.buildContext() : null;
+  if (build) process.on('exit', () => build.cleanup());
+  const buildRoot = build?.dir ?? null;
+  const image = buildRoot === null ? a.image ?? `${profile.imageRepo}:${profile.version()}` : null;
   if (image !== null && a.image === null) await requirePublishedImage(image, false);
 
   await requireFly();
 
   const existed = await appExists(app);
-  const live = existed ? await liveSettings(app) : {};
+  const live = existed ? await liveSettings(app, profile) : {};
   const settings = resolveSettings(a, live);
 
   // A volume cannot move, so a region flag that disagrees with the volume that
@@ -537,8 +625,8 @@ export async function deployFlyCmd(args: string[], usage: () => never): Promise<
   // machine in one region that can never attach the disk in another.
   if (existed && live.region && a.region && a.region !== live.region) {
     die(
-      `This vault's volume is in ${live.region}, and a volume cannot be moved to ${a.region}.\n` +
-        'Deploying to another region means a new vault and copying the data across.'
+      `This ${noun}'s volume is in ${live.region}, and a volume cannot be moved to ${a.region}.\n` +
+        `Deploying to another region means a new ${noun} and copying the data across.`
     );
   }
 
@@ -555,13 +643,13 @@ export async function deployFlyCmd(args: string[], usage: () => never): Promise<
     }
   }
 
-  const vol = await vaultVolume(app);
+  const vol = await volumeOf(app, profile);
   if (!vol) {
-    console.log(`==> Creating a ${settings.volumeGb}GB volume '${VOLUME_NAME}' in ${settings.region}`);
+    console.log(`==> Creating a ${settings.volumeGb}GB volume '${profile.volumeName}' in ${settings.region}`);
     const code = await flyStream([
       'volumes',
       'create',
-      VOLUME_NAME,
+      profile.volumeName,
       '-a',
       app,
       '--region',
@@ -570,9 +658,9 @@ export async function deployFlyCmd(args: string[], usage: () => never): Promise<
       String(settings.volumeGb),
       '--yes',
     ]);
-    if (code !== 0) die('\nCould not create the volume, so there is nowhere to keep the vault.');
+    if (code !== 0) die(`\nCould not create the volume, so there is nowhere to keep the ${noun}.`);
   } else if (settings.volumeGb > vol.size_gb) {
-    console.log(`==> Extending volume '${VOLUME_NAME}' from ${vol.size_gb}GB to ${settings.volumeGb}GB`);
+    console.log(`==> Extending volume '${profile.volumeName}' from ${vol.size_gb}GB to ${settings.volumeGb}GB`);
     const code = await flyStream(['volumes', 'extend', vol.id, '-a', app, '--size', String(settings.volumeGb)]);
     if (code !== 0) die('\nCould not extend the volume.');
   } else if (a.volumeGb !== null && a.volumeGb < vol.size_gb) {
@@ -635,7 +723,7 @@ export async function deployFlyCmd(args: string[], usage: () => never): Promise<
     console.log('==> Setting the one-time owner token as a Fly secret');
     // `secrets import` reads KEY=VALUE lines from stdin, which keeps the token
     // off the child's argv and so out of `ps`.
-    const r = await fly(['secrets', 'import', '-a', app, '--stage'], `${OWNER_TOKEN_SECRET}=${ownerToken}\n`);
+    const r = await fly(['secrets', 'import', '-a', app, '--stage'], `${ownerTokenSecret}=${ownerToken}\n`);
     if (r.code !== 0) die(`Could not set the owner token secret:\n${r.stderr.trim() || r.stdout.trim()}`);
     // From here the token exists in two places: this process, and a Fly secret
     // that can be written but never read back. So every way out of the rest of
@@ -653,20 +741,20 @@ export async function deployFlyCmd(args: string[], usage: () => never): Promise<
         2,
         '\nThe owner token this run staged as a Fly secret, shown here because nothing\n' +
           'else has a copy of it. A Fly secret can be written but not read back, and this\n' +
-          'token is the owner of the vault if this app initialized one:\n' +
+          `token is the owner of the ${noun} if this app initialized one:\n` +
           `\n  ${ownerToken}\n` +
-          `\nKeep it, then sign the CLI in with it: mochi login ${appUrl(app)}\n` +
+          `\nKeep it, then sign the CLI in with it: ${product} login ${appUrl(app)}\n` +
           '(paste the token when asked; --token-stdin takes it from a pipe, and --token\n' +
           'on the command line would leave it in shell history).\n'
       );
     });
   }
 
-  const config = writeTempConfig(app, settings);
-  // A source build runs fly in the checkout, so the build context is the checkout
-  // and fly finds its Dockerfile without being told where it is. --config still
-  // points at the generated fly.toml in a temporary directory, which is why there
-  // is no fly.toml in the repository for a build to pick up by accident.
+  const config = writeTempConfig(app, settings, profile);
+  // A source build runs fly in the build context, so fly finds its Dockerfile
+  // without being told where it is. --config still points at the generated
+  // fly.toml in a temporary directory, which is why there is no fly.toml in the
+  // repository for a build to pick up by accident.
   //
   // Without --local-only, flyctl builds on a Fly builder machine, which needs no
   // Docker here and provisions a builder app on first use. --local-build asks for
@@ -677,20 +765,24 @@ export async function deployFlyCmd(args: string[], usage: () => never): Promise<
   } else {
     console.log(`==> Deploying ${image}`);
   }
-  const code = await flyStream(
-    [
-      'deploy',
-      '--app',
-      app,
-      '--config',
-      config,
-      ...(source ? (a.localBuild ? ['--local-only'] : []) : ['--image', image as string]),
-      '--ha=false',
-      '--yes',
-    ],
-    buildRoot ?? undefined
-  );
-  fs.rmSync(path.dirname(config), { recursive: true, force: true });
+  let code: number;
+  try {
+    code = await flyStream(
+      [
+        'deploy',
+        '--app',
+        app,
+        '--config',
+        config,
+        ...(source ? (a.localBuild ? ['--local-only'] : []) : ['--image', image as string]),
+        '--ha=false',
+        '--yes',
+      ],
+      buildRoot ?? undefined
+    );
+  } finally {
+    fs.rmSync(path.dirname(config), { recursive: true, force: true });
+  }
   if (code !== 0) {
     console.error('');
     console.error('The deploy failed. The app and the volume survive, so fix the cause and run the');
@@ -702,7 +794,7 @@ export async function deployFlyCmd(args: string[], usage: () => never): Promise<
       // the exit hook is about to print it.
       console.error('');
       console.error('The retry may not mint a token of its own, because the one shown at the end of');
-      console.error('this output is already the token the vault will be initialized with. Keep it,');
+      console.error(`this output is already the token the ${noun} will be initialized with. Keep it,`);
       console.error('and log in with it once a deploy succeeds.');
     }
     if (source) {
@@ -724,7 +816,7 @@ export async function deployFlyCmd(args: string[], usage: () => never): Promise<
   if (!ownerToken) {
     console.log(`==> Deployed: ${url}`);
     console.log('');
-    console.log('The vault it serves is whichever vault was already on the volume, users and all.');
+    console.log(`The ${noun} it serves is whichever ${noun} was already on the volume, users and all.`);
     // No token was minted because a machine had run before, which usually means
     // a vault that has been in use and an operator who is already logged in.
     // With nothing stored here, the other reading is possible: an earlier
@@ -733,11 +825,11 @@ export async function deployFlyCmd(args: string[], usage: () => never): Promise<
     // case where it might be the answer.
     if (!(await readCredential(credentialTarget(url)))) {
       console.log('');
-      console.log('No token for it is stored on this machine, so log in with one the vault knows:');
+      console.log(`No token for it is stored on this machine, so log in with one the ${noun} knows:`);
       console.log('');
-      console.log(`  mochi login ${url}`);
+      console.log(`  ${product} login ${url}`);
       console.log('');
-      console.log('If an earlier deploy of this app failed, the vault was initialized just now with');
+      console.log(`If an earlier deploy of this app failed, the ${noun} was initialized just now with`);
       console.log('the owner token that run printed, and that is the token to use.');
       console.log('');
     }
@@ -745,7 +837,7 @@ export async function deployFlyCmd(args: string[], usage: () => never): Promise<
     return;
   }
 
-  console.log('==> Waiting for the vault to answer');
+  console.log(`==> Waiting for the ${noun} to answer`);
   const ready = await waitForVault(url, ownerToken);
   if (!ready.ok) {
     console.error('');
@@ -756,10 +848,10 @@ export async function deployFlyCmd(args: string[], usage: () => never): Promise<
       // a vault that was initialized by an earlier machine. Its own tokens are
       // still the way in, and no token minted here will ever work on it.
       console.error('');
-      console.error('If this app has served a vault before, that vault keeps the users and tokens it');
+      console.error(`If this app has served a ${noun} before, that ${noun} keeps the users and tokens it`);
       console.error('already had, and a token minted now is not one of them. Log in with one of those:');
       console.error('');
-      console.error(`  mochi login ${url}`);
+      console.error(`  ${product} login ${url}`);
     }
     // The token this run minted is printed on the way out by the exit hook,
     // since a vault that has not answered yet may still adopt it.
@@ -770,12 +862,12 @@ export async function deployFlyCmd(args: string[], usage: () => never): Promise<
   // left the operator holding a vault whose token they had never seen, which is
   // no way to sign in to the web UI and nothing to keep anywhere; and the token
   // cannot be recovered later, since the server keeps only its hash and a Fly
-  // secret cannot be read back. So it is printed once, with the two ways to use
-  // it, and `mochi login` stays the one thing that stores a credential.
+  // secret cannot be read back. So it is printed once, with the ways to use
+  // it, and `login` stays the one thing that stores a credential.
   console.log('');
   console.log(`==> Ready: ${url}`);
   console.log('');
-  console.log(`The vault is initialized, and '${ready.username}' owns it. This is its token, shown`);
+  console.log(`The ${noun} is initialized, and '${ready.username}' owns it. This is its token, shown`);
   console.log('here once and nowhere else: the server keeps only its hash, and the Fly secret it');
   console.log('was staged in cannot be read back. Keep it somewhere safe now.');
   console.log('');
@@ -784,37 +876,24 @@ export async function deployFlyCmd(args: string[], usage: () => never): Promise<
   // operator, and stdout can fail (a closed pipe) between here and there.
   tokenDelivered = true;
   console.log('');
-  console.log(`To administer the vault in a browser, open its sign-in page and give that token as`);
-  console.log(`'${ready.username}':`);
-  console.log('');
-  console.log(`  ${url}/login`);
-  console.log('');
-  console.log('The form asks for a username and a token, since a vault has no passwords. From');
-  console.log('there the Admin page creates the users and the repositories, which is the usual');
-  console.log('way to bootstrap a fresh vault.');
-  console.log('');
-  console.log('To use the CLI and git instead, hand the same token to git\'s credential store,');
-  console.log('which is what login is for:');
-  console.log('');
-  console.log(`  mochi login ${url}`);
-  console.log('');
-  console.log('It asks for the token without echoing it, checks it, and remembers this vault, so');
-  console.log('these need no arguments afterwards and git stops asking on a push:');
-  console.log('');
-  console.log('  mochi whoami');
-  console.log("  mochi user add alice --scope 'alice/*'");
-  console.log(`  mochi import https://github.com/someone/something.git mine`);
+  for (const line of profile.firstSteps(url, ready.username)) console.log(line);
   console.log('');
   console.log('Deploy an update, or change a setting, with the same command:');
   console.log('');
-  console.log(`  mochi deploy fly ${app}`);
-  console.log(`  mochi deploy fly ${app} --volume 50 --vm-memory 1gb`);
+  console.log(`  ${product} deploy fly ${app}`);
+  console.log(`  ${product} deploy fly ${app} --volume 50 --vm-memory 1gb`);
 }
 
-export async function deployShowCmd(args: string[], usage: () => never): Promise<void> {
+export async function deployShowCmd(
+  args: string[],
+  usage: () => never,
+  profile: DeployProfile = MOCHI_DEPLOY
+): Promise<void> {
+  const product = naming.product;
+  const noun = naming.rootNoun;
   const a = parseDeployArgs(args, usage);
-  if (!a.app) die('Which app? Usage: mochi deploy fly show <app>');
-  rejectFlyFlags(a, 'mochi deploy fly show <app>', false);
+  if (!a.app) die(`Which app? Usage: ${product} deploy fly show <app>`);
+  rejectFlyFlags(a, `${product} deploy fly show <app>`, false);
   const app = a.app;
   await requireFly();
   if (!(await appExists(app))) {
@@ -822,18 +901,18 @@ export async function deployShowCmd(args: string[], usage: () => never): Promise
   }
 
   const url = appUrl(app);
-  const vol = await vaultVolume(app);
+  const vol = await volumeOf(app, profile);
   const ms = await machines(app);
   const secrets = await secretNames(app);
 
   console.log(`${app}  ${url}`);
   console.log('');
   if (ms.length === 0) {
-    console.log('  machines  none, so nothing is serving this vault');
+    console.log(`  machines  none, so nothing is serving this ${noun}`);
   } else {
     // More than one machine is worth naming rather than summarizing: it means
     // two volumes and two vaults, which is the failure --ha=false prevents.
-    if (ms.length > 1) console.log(`  machines  ${ms.length}, which is one too many for a single-volume vault`);
+    if (ms.length > 1) console.log(`  machines  ${ms.length}, which is one too many for a single-volume ${noun}`);
     for (const m of ms) {
       const g = m.config?.guest;
       const shape = g ? `${g.cpu_kind}-cpu-${g.cpus}x, ${g.memory_mb}mb` : 'unknown shape';
@@ -842,31 +921,35 @@ export async function deployShowCmd(args: string[], usage: () => never): Promise
     }
   }
   console.log(vol ? `  volume    ${vol.size_gb}GB in ${vol.region} (${vol.state ?? 'created'})` : '  volume    none');
-  console.log(`  lfs       ${secrets.includes('BUCKET_NAME') ? 'objects in a bucket (BUCKET_NAME is set)' : 'objects on the volume'}`);
+  if (profile.lfsBucket) {
+    console.log(`  lfs       ${secrets.includes('BUCKET_NAME') ? 'objects in a bucket (BUCKET_NAME is set)' : 'objects on the volume'}`);
+  }
 
   // Whether it works, which is the question `fly status` cannot answer. A
   // stored credential turns this into a report of who you are on it.
   const target = credentialTarget(url);
   const stored = await readCredential(target);
-  let vault = 'not reachable';
+  let status = 'not reachable';
   try {
     const resp = await fetch(`${url}/api/whoami`, {
       headers: stored ? { authorization: `Bearer ${stored.password}` } : {},
     });
     if (resp.ok) {
       const data = (await resp.json()) as { username?: unknown };
-      vault = `answering, and you are '${String(data.username)}' on it`;
+      status = `answering, and you are '${String(data.username)}' on it`;
     } else if (resp.status === 401) {
-      vault = stored ? 'answering, but your stored token is not valid on it' : 'answering (no token stored here)';
+      status = stored ? 'answering, but your stored token is not valid on it' : 'answering (no token stored here)';
     } else {
-      vault = `answering with HTTP ${resp.status}`;
+      status = `answering with HTTP ${resp.status}`;
     }
   } catch (e) {
-    vault = `not reachable: ${e instanceof Error ? e.message : e}`;
+    status = `not reachable: ${e instanceof Error ? e.message : e}`;
   }
-  console.log(`  vault     ${vault}`);
+  console.log(`  ${noun.padEnd(9)} ${status}`);
   const saved = loadLogin();
-  if (saved && saved.host.replace(/\/+$/, '') === url) console.log('  login     this is the vault mochi commands use');
+  if (saved && saved.host.replace(/\/+$/, '') === url) {
+    console.log(`  login     this is the ${noun} ${product} commands use`);
+  }
   // Fly's own volume snapshots live at the same provider as the volume, so they
   // are a complement to a backup on a disk of your own rather than a substitute
   // for one. Whether this machine keeps such a copy is worth one line.
@@ -875,7 +958,7 @@ export async function deployShowCmd(args: string[], usage: () => never): Promise
   // certainly backed up by that name rather than by <app>.fly.dev, and a report
   // that said "none" in that case would be worse than no report at all.
   const backup = backupLineFor([url, ...(await certHostnames(app)).map((h) => `https://${h}`)]);
-  console.log(backup ? `  backup    ${backup}` : '  backup    none on this machine (mochi backup <dir>)');
+  console.log(backup ? `  backup    ${backup}` : `  backup    none on this machine (${product} backup <dir>)`);
   console.log('');
   console.log(`  fly logs -a ${app}`);
 }
@@ -898,22 +981,27 @@ export function promptLine(prompt: string): Promise<string> {
   });
 }
 
-export async function deployDestroyCmd(args: string[], usage: () => never): Promise<void> {
+export async function deployDestroyCmd(
+  args: string[],
+  usage: () => never,
+  profile: DeployProfile = MOCHI_DEPLOY
+): Promise<void> {
+  const product = naming.product;
   const a = parseDeployArgs(args, usage);
-  if (!a.app) die('Which app? Usage: mochi deploy fly destroy <app> [--yes]');
-  rejectFlyFlags(a, 'mochi deploy fly destroy <app> [--yes]', true);
+  if (!a.app) die(`Which app? Usage: ${product} deploy fly destroy <app> [--yes]`);
+  rejectFlyFlags(a, `${product} deploy fly destroy <app> [--yes]`, true);
   const app = a.app;
   await requireFly();
   if (!(await appExists(app))) {
     die(`No Fly app named '${app}' that you can see. Check the name, or: fly apps list`);
   }
 
-  const vol = await vaultVolume(app);
-  const hadBucket = (await secretNames(app)).includes('BUCKET_NAME');
+  const vol = await volumeOf(app, profile);
+  const hadBucket = profile.lfsBucket && (await secretNames(app)).includes('BUCKET_NAME');
 
   if (!a.yes) {
     console.log(`This destroys the Fly app '${app}' and its ${vol ? `${vol.size_gb}GB ` : ''}volume.`);
-    console.log('Everything in the vault goes with it: repositories, issues, pull requests, users.');
+    console.log(`Everything in the ${naming.rootNoun} goes with it: ${profile.contents}.`);
     console.log('There is no undo, and Fly keeps no backup of a destroyed volume.');
     console.log('');
     const answer = await promptLine(`Type the app name to confirm: `);

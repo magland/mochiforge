@@ -4,6 +4,7 @@ import * as path from 'path';
 import { Request, Response } from 'express';
 import { isSiteRequest } from './domains';
 import { fileCache } from './filecache';
+import { naming } from './naming';
 import { isSiteAdmin } from './perms';
 import { AuthResult, authForBinding, loadVault } from './vault';
 
@@ -33,9 +34,11 @@ import { AuthResult, authForBinding, loadVault } from './vault';
 // The prefix also requires Secure and Path=/, so the name is conditional on
 // exactly when the prefix is legal: setSessionCookie already sets path '/' and
 // sets secure from req.protocol, and a plain-http vault keeps the bare name.
-const HOST_COOKIE_NAME = '__Host-mochi_session';
-const COOKIE_NAME = 'mochi_session';
-const cookieName = (req: Request) => (req.protocol === 'https' ? HOST_COOKIE_NAME : COOKIE_NAME);
+// Read through src/naming.ts at call time, so an application that renamed the
+// cookie (dango, say) gets its own name from the same modules; for mochiforge
+// these spell mochi_session and __Host-mochi_session as they always did.
+const hostCookieName = () => `__Host-${naming.cookieName}`;
+const cookieName = (req: Request) => (req.protocol === 'https' ? hostCookieName() : naming.cookieName);
 // Effectively an idle limit rather than a hard one: renewSession below
 // re-issues a cookie seen in the second half of its life, so only a session
 // unused for this long actually expires.
@@ -143,8 +146,8 @@ export function renewSession(req: Request, res: Response, root: string): void {
 // browser discards it and the session survives, so sign-out would silently do
 // nothing on an https vault.
 export function clearSessionCookie(res: Response): void {
-  res.clearCookie(HOST_COOKIE_NAME, { path: '/', secure: true });
-  res.clearCookie(COOKIE_NAME, { path: '/' });
+  res.clearCookie(hostCookieName(), { path: '/', secure: true });
+  res.clearCookie(naming.cookieName, { path: '/' });
 }
 
 function parseCookies(header: string | undefined): Record<string, string> {

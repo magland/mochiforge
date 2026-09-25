@@ -11,6 +11,7 @@ import { containedIn } from '../ops';
 import { isSiteAdmin } from '../perms';
 import { isBareRepo, isValidName } from '../scan';
 import { createLfsStore } from '../lfsstore';
+import { naming } from '../naming';
 import { apiError, requireApiAuth } from './auth';
 
 // The two routes a backup needs, and nothing else.
@@ -221,11 +222,53 @@ async function refsDigest(dir: string): Promise<string> {
   return crypto.createHash('sha256').update(out).update(`HEAD ${head}\n`).digest('hex');
 }
 
-export function registerBackupApi(app: Express, root: string, limiter: AuthLimiter, gates: Gates): void {
-  // The manifest necessarily names vault.json and .secret, and a fetch will
-  // hand over their contents, so nothing narrower than site admin is enough.
-  // A restricted (token-scoped) token is refused by isSiteAdmin whatever its
-  // user's standing, which is the behaviour wanted here.
+/**
+ * How the manifest route emits what an application's layout holds. The
+ * application decides what to walk; this decides how each thing becomes a
+ * line, so the wire format and the rules about temporary files and symlinks
+ * stay in one place.
+ */
+export interface ManifestWriter {
+  /** One `kind:"file"` line for this path, if it is a file of the tree. False once the client has gone. */
+  file(abs: string): Promise<boolean>;
+  /** Every file under a directory, in name order. `skip` leaves out a subdirectory by name. */
+  tree(dir: string, skip?: (name: string, abs: string) => boolean): Promise<boolean>;
+  /** A line of the application's own, such as a repository; `kind:"repo"` lines are counted. */
+  line(entry: Record<string, unknown>): Promise<boolean>;
+}
+
+/**
+ * What a backup of one application's root directory covers. Mochi's is the
+ * vault's state files and its collections, with repositories as mirrors; a
+ * sibling application built on these routes (dango) supplies its own.
+ */
+export interface BackupLayout {
+  /** The state files at the root, in the order the manifest lists them. */
+  rootFiles: string[];
+  /** Which of those `secrets` leaves out. */
+  secretFiles: Set<string>;
+  /** The categories a caller may name in `?exclude=`. */
+  excludable: Set<string>;
+  /** Fields for the manifest's first line beside `excluded`. */
+  header(): Record<string, unknown>;
+  /** Everything below the root files. Returns false when the client has gone. */
+  walk(w: ManifestWriter, exclude: Set<string>): Promise<boolean>;
+  /** A concurrency gate shared with other heavy reads, or none. */
+  enter?: () => Promise<(() => void) | null>;
+}
+
+/**
+ * The two backup routes, over any layout. See the top of this file for the
+ * protocol; everything here is the same whichever application is serving it.
+ */
+export function registerBackupRoutes(app: Express, root: string, limiter: AuthLimiter, layout: BackupLayout): void {
+  const noun = () => naming.rootNoun;
+  const enter = layout.enter ?? (async () => () => undefined);
+
+  // The manifest necessarily names the identity file and .secret, and a fetch
+  // will hand over their contents, so nothing narrower than site admin is
+  // enough. A restricted (token-scoped) token is refused by isSiteAdmin
+  // whatever its user's standing, which is the behaviour wanted here.
   function requireVaultAdmin(req: Request, res: Response) {
     const auth = requireApiAuth(root, limiter, req, res);
     if (!auth) return null;
@@ -238,7 +281,7 @@ export function registerBackupApi(app: Express, root: string, limiter: AuthLimit
 
   function sendBusy(res: Response): void {
     res.setHeader('Retry-After', String(BUSY_RETRY_SECONDS));
-    apiError(res, 503, 'the vault is busy; try again shortly');
+    apiError(res, 503, `the ${noun()} is busy; try again shortly`);
   }
 
   function exclusions(req: Request, res: Response): Set<string> | null {
@@ -247,9 +290,9 @@ export function registerBackupApi(app: Express, root: string, limiter: AuthLimit
       .split(',')
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
-    const unknown = names.filter((n) => !EXCLUDABLE.has(n));
+    const unknown = names.filter((n) => !layout.excludable.has(n));
     if (unknown.length) {
-      apiError(res, 400, `unknown exclusion${unknown.length > 1 ? 's' : ''} ${unknown.join(', ')}; one of: ${[...EXCLUDABLE].join(', ')}`);
+      apiError(res, 400, `unknown exclusion${unknown.length > 1 ? 's' : ''} ${unknown.join(', ')}; one of: ${[...layout.excludable].join(', ')}`);
       return null;
     }
     return new Set(names);
@@ -261,9 +304,9 @@ export function registerBackupApi(app: Express, root: string, limiter: AuthLimit
     if (!exclude) return;
     const opts: WalkOptions = { hash: req.query.hash === '1', exclude };
 
-    // The same gate a file listing and a source archive hold, so that a backup
-    // in progress cannot crowd out a push.
-    const release = await gates.tree.enter();
+    // Gated, where the application has a gate, so that a backup in progress
+    // cannot crowd out the work the gate protects.
+    const release = await enter();
     if (!release) {
       sendBusy(res);
       return;
@@ -272,149 +315,51 @@ export function registerBackupApi(app: Express, root: string, limiter: AuthLimit
     // A manifest is a walk of a live tree and is never worth a cache.
     res.set('Cache-Control', 'no-store');
     const counts: Counts = { files: 0, bytes: 0, repos: 0 };
-    try {
-      // Which LFS backend is live is decided from the environment, so the
-      // client cannot infer it from the vault's files. A vault using a bucket
-      // has objects that are not in the vault at all, and a backup that did not
-      // say so would look complete while missing them.
-      let lfs = 'volume';
+
+    const emitFile = async (abs: string): Promise<boolean> => {
+      const line = await fileLine(root, abs, opts);
+      if (!line) return true;
+      counts.files++;
+      counts.bytes += JSON.parse(line).size as number;
+      return send(res, line + '\n');
+    };
+    const walkTree = async (dir: string, skip?: (name: string, abs: string) => boolean): Promise<boolean> => {
+      let entries: fs.Dirent[];
       try {
-        lfs = createLfsStore(root).store.kind === 's3' ? 'bucket' : 'volume';
+        entries = fs.readdirSync(dir, { withFileTypes: true });
       } catch {
-        // A partially configured bucket throws at startup, so a serving vault
-        // never reaches this; report the honest "unknown" if it somehow does.
-        lfs = 'unknown';
-      }
-      if (!(await send(res, JSON.stringify({ kind: 'vault', lfs, excluded: [...exclude] }) + '\n'))) return;
-
-      for (const name of ROOT_FILES) {
-        if (exclude.has('secrets') && SECRET_FILES.has(name)) continue;
-        const line = await fileLine(root, path.join(root, name), opts);
-        if (!line) continue;
-        counts.files++;
-        counts.bytes += JSON.parse(line).size as number;
-        if (!(await send(res, line + '\n'))) return;
-      }
-
-      const walkFiles = async (dir: string): Promise<boolean> => {
-        let entries: fs.Dirent[];
-        try {
-          entries = fs.readdirSync(dir, { withFileTypes: true });
-        } catch {
-          return true;
-        }
-        for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-          if (e.isSymbolicLink() || isTempName(e.name)) continue;
-          const abs = path.join(dir, e.name);
-          if (e.isDirectory()) {
-            if (!(await walkFiles(abs))) return false;
-            continue;
-          }
-          const line = await fileLine(root, abs, opts);
-          if (!line) continue;
-          counts.files++;
-          counts.bytes += JSON.parse(line).size as number;
-          if (!(await send(res, line + '\n'))) return false;
-        }
         return true;
-      };
-
-      let collections: fs.Dirent[];
-      try {
-        collections = fs.readdirSync(collectionsDir(root), { withFileTypes: true });
-      } catch {
-        collections = [];
       }
-      for (const c of collections.sort((a, b) => a.name.localeCompare(b.name))) {
-        if (!c.isDirectory() || c.isSymbolicLink() || !isValidName(c.name)) continue;
-
-        // Whatever the collection keeps of its own, beside its repositories.
-        // There is nothing there today; it is walked as ordinary files so that
-        // the first thing put there is backed up without this being revisited.
-        let ownEntries: fs.Dirent[];
-        try {
-          ownEntries = fs.readdirSync(collectionDir(root, c.name), { withFileTypes: true });
-        } catch {
-          ownEntries = [];
-        }
-        for (const e of ownEntries.sort((a, b) => a.name.localeCompare(b.name))) {
-          if (e.name === REPOS_DIR || e.isSymbolicLink() || isTempName(e.name)) continue;
-          const abs = path.join(collectionDir(root, c.name), e.name);
-          if (e.isDirectory()) {
-            if (!(await walkFiles(abs))) return;
-            continue;
-          }
-          const line = await fileLine(root, abs, opts);
-          if (!line) continue;
-          counts.files++;
-          counts.bytes += JSON.parse(line).size as number;
-          if (!(await send(res, line + '\n'))) return;
-        }
-
-        const repos = reposDir(root, c.name);
-        let entries: fs.Dirent[];
-        try {
-          entries = fs.readdirSync(repos, { withFileTypes: true });
-        } catch {
+      for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+        if (e.isSymbolicLink() || isTempName(e.name)) continue;
+        const abs = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          if (skip?.(e.name, abs)) continue;
+          if (!(await walkTree(abs, skip))) return false;
           continue;
         }
-        for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-          if (e.isSymbolicLink() || isTempName(e.name)) continue;
-          const abs = path.join(repos, e.name);
-          const rel = `${COLLECTIONS_DIR}/${c.name}/${REPOS_DIR}/${e.name}`;
-          if (!e.isDirectory()) {
-            const line = await fileLine(root, abs, opts);
-            if (!line) continue;
-            counts.files++;
-            counts.bytes += JSON.parse(line).size as number;
-            if (!(await send(res, line + '\n'))) return;
-            continue;
-          }
-          // A repository's contents are not enumerated: git is their
-          // transport, and listing a hundred thousand loose objects as files
-          // would be both enormous and the wrong way to move them.
-          if (isValidName(e.name) && isBareRepo(abs)) {
-            let refs: string;
-            try {
-              refs = await refsDigest(abs);
-            } catch {
-              // A directory that looks like a repository but cannot be read is
-              // reported as nothing rather than failing the whole manifest.
-              continue;
-            }
-            counts.repos++;
-            const line = JSON.stringify({
-              kind: 'repo',
-              path: rel,
-              collection: c.name,
-              repo: e.name.replace(/\.git$/, ''),
-              refs,
-              packed: await repoBytes(abs),
-            });
-            if (!(await send(res, line + '\n'))) return;
-            // A few files inside the repository are named all the same,
-            // because a mirror clone does not carry them and they are not git
-            // data: the description, which every listing shows; the config,
-            // which holds the fork parent and the receive protections a
-            // repository was created with; and mochi.json, which holds
-            // the private flag and the collaborators. Restoring a vault whose
-            // private repositories had come back public would be far worse
-            // than a poor restore.
-            for (const inside of REPO_FILES) {
-              const fileEntry = await fileLine(root, path.join(abs, inside), opts);
-              if (!fileEntry) continue;
-              counts.files++;
-              counts.bytes += JSON.parse(fileEntry).size as number;
-              if (!(await send(res, fileEntry + '\n'))) return;
-            }
-            continue;
-          }
-          if (exclude.has('runs') && e.name.endsWith('.runs')) continue;
-          if (exclude.has('sites') && e.name.endsWith('.site')) continue;
-          if (exclude.has('lfs') && e.name.endsWith('.lfs')) continue;
-          if (!(await walkFiles(abs))) return;
-        }
+        if (!(await emitFile(abs))) return false;
       }
+      return true;
+    };
+    const writer: ManifestWriter = {
+      file: emitFile,
+      tree: walkTree,
+      line: async (entry) => {
+        if (entry.kind === 'repo') counts.repos++;
+        return send(res, JSON.stringify(entry) + '\n');
+      },
+    };
+
+    try {
+      // The header's kind is the protocol's name for the root directory, and
+      // stays "vault" whatever the application calls it: a client reads it.
+      if (!(await send(res, JSON.stringify({ kind: 'vault', ...layout.header(), excluded: [...exclude] }) + '\n'))) return;
+      for (const name of layout.rootFiles) {
+        if (exclude.has('secrets') && layout.secretFiles.has(name)) continue;
+        if (!(await emitFile(path.join(root, name)))) return;
+      }
+      if (!(await layout.walk(writer, exclude))) return;
       await send(res, JSON.stringify({ kind: 'end', ...counts }) + '\n');
       res.end();
     } catch (e) {
@@ -442,7 +387,7 @@ export function registerBackupApi(app: Express, root: string, limiter: AuthLimit
     const body = (req.body ?? {}) as Record<string, unknown>;
     const paths = body.paths;
     if (!Array.isArray(paths) || paths.length === 0) {
-      apiError(res, 400, '"paths" must be a non-empty list of vault-relative paths');
+      apiError(res, 400, `"paths" must be a non-empty list of ${noun()}-relative paths`);
       return;
     }
     if (paths.length > MAX_FETCH_PATHS) {
@@ -453,7 +398,7 @@ export function registerBackupApi(app: Express, root: string, limiter: AuthLimit
     for (const p of paths) {
       const abs = vaultPath(root, p);
       if (!abs) {
-        apiError(res, 400, `not a path inside the vault: ${typeof p === 'string' ? p : typeof p}`);
+        apiError(res, 400, `not a path inside the ${noun()}: ${typeof p === 'string' ? p : typeof p}`);
         return;
       }
       absolute.push(abs);
@@ -463,7 +408,7 @@ export function registerBackupApi(app: Express, root: string, limiter: AuthLimit
     try {
       rootReal = fs.realpathSync(root);
     } catch {
-      apiError(res, 500, 'the vault directory could not be read');
+      apiError(res, 500, `the ${noun()} directory could not be read`);
       return;
     }
 
@@ -487,7 +432,7 @@ export function registerBackupApi(app: Express, root: string, limiter: AuthLimit
       return;
     }
 
-    const release = await gates.tree.enter();
+    const release = await enter();
     if (!release) {
       sendBusy(res);
       return;
@@ -562,4 +507,115 @@ export function registerBackupApi(app: Express, root: string, limiter: AuthLimit
       release();
     }
   });
+}
+
+/** Mochi's layout: the vault's state files, then each collection and its repositories. */
+function vaultLayout(root: string, gates: Gates): BackupLayout {
+  return {
+    rootFiles: ROOT_FILES,
+    secretFiles: SECRET_FILES,
+    excludable: EXCLUDABLE,
+    enter: () => gates.tree.enter(),
+    header() {
+      // Which LFS backend is live is decided from the environment, so the
+      // client cannot infer it from the vault's files. A vault using a bucket
+      // has objects that are not in the vault at all, and a backup that did not
+      // say so would look complete while missing them.
+      let lfs = 'volume';
+      try {
+        lfs = createLfsStore(root).store.kind === 's3' ? 'bucket' : 'volume';
+      } catch {
+        // A partially configured bucket throws at startup, so a serving vault
+        // never reaches this; report the honest "unknown" if it somehow does.
+        lfs = 'unknown';
+      }
+      return { lfs };
+    },
+    async walk(w, exclude) {
+      let collections: fs.Dirent[];
+      try {
+        collections = fs.readdirSync(collectionsDir(root), { withFileTypes: true });
+      } catch {
+        collections = [];
+      }
+      for (const c of collections.sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!c.isDirectory() || c.isSymbolicLink() || !isValidName(c.name)) continue;
+
+        // Whatever the collection keeps of its own, beside its repositories.
+        // There is nothing there today; it is walked as ordinary files so that
+        // the first thing put there is backed up without this being revisited.
+        let ownEntries: fs.Dirent[];
+        try {
+          ownEntries = fs.readdirSync(collectionDir(root, c.name), { withFileTypes: true });
+        } catch {
+          ownEntries = [];
+        }
+        for (const e of ownEntries.sort((a, b) => a.name.localeCompare(b.name))) {
+          if (e.name === REPOS_DIR || e.isSymbolicLink() || isTempName(e.name)) continue;
+          const abs = path.join(collectionDir(root, c.name), e.name);
+          if (!(await (e.isDirectory() ? w.tree(abs) : w.file(abs)))) return false;
+        }
+
+        const repos = reposDir(root, c.name);
+        let entries: fs.Dirent[];
+        try {
+          entries = fs.readdirSync(repos, { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        for (const e of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+          if (e.isSymbolicLink() || isTempName(e.name)) continue;
+          const abs = path.join(repos, e.name);
+          const rel = `${COLLECTIONS_DIR}/${c.name}/${REPOS_DIR}/${e.name}`;
+          if (!e.isDirectory()) {
+            if (!(await w.file(abs))) return false;
+            continue;
+          }
+          // A repository's contents are not enumerated: git is their
+          // transport, and listing a hundred thousand loose objects as files
+          // would be both enormous and the wrong way to move them.
+          if (isValidName(e.name) && isBareRepo(abs)) {
+            let refs: string;
+            try {
+              refs = await refsDigest(abs);
+            } catch {
+              // A directory that looks like a repository but cannot be read is
+              // reported as nothing rather than failing the whole manifest.
+              continue;
+            }
+            const ok = await w.line({
+              kind: 'repo',
+              path: rel,
+              collection: c.name,
+              repo: e.name.replace(/\.git$/, ''),
+              refs,
+              packed: await repoBytes(abs),
+            });
+            if (!ok) return false;
+            // A few files inside the repository are named all the same,
+            // because a mirror clone does not carry them and they are not git
+            // data: the description, which every listing shows; the config,
+            // which holds the fork parent and the receive protections a
+            // repository was created with; and mochi.json, which holds
+            // the private flag and the collaborators. Restoring a vault whose
+            // private repositories had come back public would be far worse
+            // than a poor restore.
+            for (const inside of REPO_FILES) {
+              if (!(await w.file(path.join(abs, inside)))) return false;
+            }
+            continue;
+          }
+          if (exclude.has('runs') && e.name.endsWith('.runs')) continue;
+          if (exclude.has('sites') && e.name.endsWith('.site')) continue;
+          if (exclude.has('lfs') && e.name.endsWith('.lfs')) continue;
+          if (!(await w.tree(abs))) return false;
+        }
+      }
+      return true;
+    },
+  };
+}
+
+export function registerBackupApi(app: Express, root: string, limiter: AuthLimiter, gates: Gates): void {
+  registerBackupRoutes(app, root, limiter, vaultLayout(root, gates));
 }

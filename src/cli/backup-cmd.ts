@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { RemoteTarget } from '../cli-api';
 import { writeFileAtomic } from '../atomic';
+import { naming } from '../naming';
 import { isBareRepo } from '../scan';
 import { CliError, EXIT_CONFLICT, EXIT_FAIL, EXIT_USAGE, exitCodeForStatus } from './exit';
 import { JSON_OPTION, jsonMode, pickObject, printJson, printTable } from './output';
@@ -300,8 +301,8 @@ function isVaultRelative(p: unknown): p is string {
 /** How a refused path is reported, in one place since two kinds of line carry one. */
 function refusedPath(p: unknown): string {
   return (
-    `The vault named a path this backup will not write: ${JSON.stringify(p)}. ` +
-    'A manifest path must be relative to the vault and must not climb out of it, so nothing was copied.'
+    `The ${naming.rootNoun} named a path this backup will not write: ${JSON.stringify(p)}. ` +
+    `A manifest path must be relative to the ${naming.rootNoun} and must not climb out of it, so nothing was copied.`
   );
 }
 
@@ -356,8 +357,8 @@ async function fetchManifest(target: RemoteTarget, exclude: string[], hash: bool
     // URL and the token, neither of which is the problem.
     if (resp.status === 404) {
       message =
-        `${target.host} has no /api/backup/manifest route, so it is running a mochi older than this ` +
-        'command. Deploy the vault again from a version that has it, then run this.';
+        `${target.host} has no /api/backup/manifest route, so it is running a ${naming.product} older than this ` +
+        `command. Deploy the ${naming.rootNoun} again from a version that has it, then run this.`;
     }
     // The same status-to-code mapping every other command uses, so that a
     // caller branching on the exit code does not have to learn a second table.
@@ -390,14 +391,14 @@ async function fetchManifest(target: RemoteTarget, exclude: string[], hash: bool
       manifest.counts = { files: e.files, bytes: e.bytes, repos: e.repos };
       ended = true;
     } else if (kind === 'error') {
-      throw new CliError(`The vault could not finish the manifest: ${String((line as { error?: unknown }).error)}`);
+      throw new CliError(`The ${naming.rootNoun} could not finish the manifest: ${String((line as { error?: unknown }).error)}`);
     }
   }
   // The end line is what says the walk completed. Acting on a truncated
   // manifest would delete every path the vault did not get around to listing.
   if (!ended) {
     throw new CliError(
-      'The manifest ended early, so what the vault holds is not fully known. Nothing was deleted; try again.'
+      `The manifest ended early, so what the ${naming.rootNoun} holds is not fully known. Nothing was deleted; try again.`
     );
   }
   return manifest;
@@ -472,7 +473,7 @@ class FrameReader {
     let left = n;
     while (left > 0) {
       if (this.buf.length === 0 && !(await this.more())) {
-        throw new CliError('The vault closed the connection part way through a file. Nothing was left half-written.');
+        throw new CliError(`The ${naming.rootNoun} closed the connection part way through a file. Nothing was left half-written.`);
       }
       const take = Math.min(left, this.buf.length);
       sink(this.buf.subarray(0, take));
@@ -718,19 +719,77 @@ const RETENTION_OPTIONS: OptionSpec[] = [
   },
 ];
 
-const EXCLUDE_OPTIONS: OptionSpec[] = [
-  { name: 'no-runs', type: 'boolean', summary: 'Leave out workflow run history (<repo>.runs)' },
-  { name: 'no-sites', type: 'boolean', summary: 'Leave out published sites (<repo>.site)' },
-  { name: 'no-lfs', type: 'boolean', summary: 'Leave out LFS objects on the volume (<repo>.lfs)' },
-  { name: 'no-secrets', type: 'boolean', summary: 'Leave out vault.json, runners.json, .secret, and .github-secret' },
-];
+/**
+ * What differs between applications that share this backup client: which
+ * categories the server lets a backup leave out, whether there are git
+ * mirrors to report on, and the help text. The protocol, the directory
+ * layout, the snapshots, and every rule about writing by rename are the same
+ * for all of them, which is why this is a profile and not a copy.
+ */
+export interface BackupProfile {
+  /** Each `--no-<category>` option, and the category the server knows it by. */
+  exclusions: { category: string; summary: string }[];
+  /** Whether the server has repositories to mirror; without them the reports leave them out. */
+  repos: boolean;
+  description: string;
+  verifyDescription: string;
+  pruneDescription: string;
+}
+
+export const MOCHI_BACKUP: BackupProfile = {
+  exclusions: [
+    { category: 'runs', summary: 'Leave out workflow run history (<repo>.runs)' },
+    { category: 'sites', summary: 'Leave out published sites (<repo>.site)' },
+    { category: 'lfs', summary: 'Leave out LFS objects on the volume (<repo>.lfs)' },
+    { category: 'secrets', summary: 'Leave out vault.json, runners.json, .secret, and .github-secret' },
+  ],
+  repos: true,
+  description: `A vault is a directory, so a backup of one is a directory too, and this makes it
+over HTTP: it needs no shell on the server, no flyctl, and no rsync at the far
+end, so it works the same against a Fly app, a VPS, a Docker deployment, and
+127.0.0.1:3000.
+
+  <dir>/current      a servable vault. Restoring is: mochi serve <dir>/current
+  <dir>/snapshots    hardlinked copies, each one also a servable vault
+  <dir>/backup.json  which vault, what is left out, and how each run went
+
+Repositories come across as mirrors, so a second run moves only the objects it
+does not have and skips a repository nothing was pushed to. Everything beside
+them - issues, pull requests, releases, sites, run history, LFS objects on the
+volume, and the vault's state files - is compared by size and modification time
+and fetched only where it differs.
+
+The token needs to belong to a site admin, because the copy includes
+vault.json. The vault URL, the exclusions, and the retention policy are recorded
+in backup.json, so a cron entry is this command and a directory.
+
+There is no vault-wide point-in-time image: the server holds no lock a client
+could take, so a run is a walk of a live tree and can catch a mixed vintage.
+Every individual file in a backup is one that really existed. See docs/backup.md.
+
+Related: mochi backup list, verify, prune.`,
+  verifyDescription: `Runs git fsck --connectivity-only over every mirror, asks the vault for hashes,
+and reports anything missing, extra, or different. Exits non-zero when there is
+something to report, so it can be run from cron.`,
+  pruneDescription: `Grandfather-father-son: the newest snapshot of each of the last N days, weeks,
+and months is kept and the rest are removed, evaluated in UTC. The newest
+snapshot is always kept.
+
+A snapshot pins the packfiles that were current when it was taken, so a repack
+in a busy repository leaves the old pack on disk until the last snapshot
+referring to it is pruned. This is what reclaims that space.`,
+};
+
+function excludeOptions(profile: BackupProfile): OptionSpec[] {
+  return profile.exclusions.map((e) => ({ name: `no-${e.category}`, type: 'boolean' as const, summary: e.summary }));
+}
 
 const QUIET_OPTION: OptionSpec = { name: 'quiet', type: 'boolean', summary: 'Say nothing on success' };
 
 /** The backup directory a command was given, made if it is not there yet. */
 function backupDirectory(inv: Invocation, create: boolean): string {
   const given = inv.args[0];
-  if (!given) throw new CliError('Which directory? Usage: mochi backup <dir>', EXIT_USAGE);
+  if (!given) throw new CliError(`Which directory? Usage: ${naming.product} backup <dir>`, EXIT_USAGE);
   const dir = path.resolve(given);
   if (!fs.existsSync(dir)) {
     if (!create) throw new CliError(`No backup directory at ${dir}.`, EXIT_USAGE);
@@ -746,7 +805,7 @@ function existingBackup(inv: Invocation): { dir: string; state: BackupState } {
   const dir = backupDirectory(inv, false);
   if (!fs.existsSync(statePath(dir))) {
     throw new CliError(
-      `${dir} holds no backup (no ${STATE_FILE}). Make one first: mochi backup ${inv.args[0]}`,
+      `${dir} holds no backup (no ${STATE_FILE}). Make one first: ${naming.product} backup ${inv.args[0]}`,
       EXIT_USAGE
     );
   }
@@ -759,12 +818,8 @@ function existingBackup(inv: Invocation): { dir: string; state: BackupState } {
  * last run used, and naming any at all replaces the set, which is how a
  * category can be put back.
  */
-function exclusionsFor(inv: Invocation, state: BackupState): string[] {
-  const given: string[] = [];
-  if (inv.bool('no-runs')) given.push('runs');
-  if (inv.bool('no-sites')) given.push('sites');
-  if (inv.bool('no-lfs')) given.push('lfs');
-  if (inv.bool('no-secrets')) given.push('secrets');
+function exclusionsFor(inv: Invocation, state: BackupState, profile: BackupProfile): string[] {
+  const given = profile.exclusions.map((e) => e.category).filter((c) => inv.bool(`no-${c}`));
   return given.length ? given : state.excluded;
 }
 
@@ -952,13 +1007,13 @@ async function fetchChunk(
     }
     throw new CliError(message, exitCodeForStatus(resp.status));
   }
-  if (!resp.body) throw new CliError('The vault answered a fetch with no body.');
+  if (!resp.body) throw new CliError(`The ${naming.rootNoun} answered a fetch with no body.`);
   const reader = new FrameReader(resp.body as unknown as AsyncIterable<Uint8Array>);
   let bytes = 0;
   let missing: string[] = [];
   for (;;) {
     const line = await reader.line();
-    if (line === null) throw new CliError('The vault ended a fetch without saying it had finished.');
+    if (line === null) throw new CliError(`The ${naming.rootNoun} ended a fetch without saying it had finished.`);
     const frame = JSON.parse(line) as { path?: string; size?: number; end?: boolean; missing?: string[] };
     if (frame.end) {
       missing = frame.missing ?? [];
@@ -967,7 +1022,7 @@ async function fetchChunk(
     const rel = frame.path;
     const size = frame.size;
     if (typeof rel !== 'string' || typeof size !== 'number' || !byPath.has(rel)) {
-      throw new CliError(`The vault sent a file this run did not ask for: ${String(rel)}`);
+      throw new CliError(`The ${naming.rootNoun} sent a file this run did not ask for: ${String(rel)}`);
     }
     const wanted = byPath.get(rel) as ManifestFile;
     const dest = path.join(current, ...rel.split('/'));
@@ -1057,7 +1112,7 @@ function emptyDirs(dir: string, rel = '', out: string[] = []): boolean {
   return empty;
 }
 
-async function syncCmd(inv: Invocation): Promise<void> {
+async function syncCmd(inv: Invocation, profile: BackupProfile): Promise<void> {
   const json = jsonMode(inv);
   // Two kinds of silence, and they are not the same. --json puts one JSON value
   // on stdout, so the running commentary has to go, but a warning is a
@@ -1068,7 +1123,7 @@ async function syncCmd(inv: Invocation): Promise<void> {
   const dir = backupDirectory(inv, true);
   const state = loadState(dir);
   const target = await targetForBackup(inv, state);
-  const exclude = exclusionsFor(inv, state);
+  const exclude = exclusionsFor(inv, state, profile);
   const retention = retentionFor(inv, state);
   const checksum = inv.bool('checksum');
   const current = path.join(dir, CURRENT);
@@ -1144,7 +1199,7 @@ async function syncCmd(inv: Invocation): Promise<void> {
       fs.rmSync(path.join(current, known), { recursive: true, force: true });
       delete state.repos[known];
       summary.repos.removed++;
-      if (!quiet) console.error(`Removed ${known}, which the vault no longer holds`);
+      if (!quiet) console.error(`Removed ${known}, which the ${naming.rootNoun} no longer holds`);
     }
 
     // Files.
@@ -1159,7 +1214,7 @@ async function syncCmd(inv: Invocation): Promise<void> {
       summary.files.bytes += r.bytes;
       for (const gone of r.missing) {
         delete state.files[gone];
-        if (!quiet) console.error(`${gone} vanished from the vault while this run was reading it`);
+        if (!quiet) console.error(`${gone} vanished from the ${naming.rootNoun} while this run was reading it`);
       }
     }
     // A mirror's config is one of the files the manifest names, so the copy just
@@ -1262,18 +1317,20 @@ async function syncCmd(inv: Invocation): Promise<void> {
   }
   if (quiet) return;
   const r = summary.repos;
-  console.log(
-    `${r.total} repositories: ${r.cloned} cloned, ${r.fetched} fetched, ${r.skipped} unchanged` +
-      (r.removed ? `, ${r.removed} removed` : '')
-  );
+  if (profile.repos) {
+    console.log(
+      `${r.total} repositories: ${r.cloned} cloned, ${r.fetched} fetched, ${r.skipped} unchanged` +
+        (r.removed ? `, ${r.removed} removed` : '')
+    );
+  }
   console.log(
     `${summary.files.total} files: ${summary.files.fetched} fetched (${human(summary.files.bytes)})` +
       (summary.files.removed ? `, ${summary.files.removed} removed` : '')
   );
   if (summary.snapshot) console.log(`Snapshot ${summary.snapshot}`);
   console.log('');
-  console.log(`Serve this backup to look at it, or to stand the vault back up:`);
-  console.log(`  mochi serve ${path.join(dir, CURRENT)}`);
+  console.log(`Serve this backup to look at it, or to stand the ${naming.rootNoun} back up:`);
+  console.log(`  ${naming.product} serve ${path.join(dir, CURRENT)}`);
 }
 
 // ---- list, prune, verify ----
@@ -1304,7 +1361,7 @@ function listCmd(inv: Invocation): void {
     return;
   }
   console.log(`${dir}`);
-  console.log(`  vault      ${state.host || '(unknown)'}`);
+  console.log(`  ${naming.rootNoun.padEnd(10)} ${state.host || '(unknown)'}`);
   console.log(`  current    ${human(apparentSize(path.join(dir, CURRENT)))} apparent`);
   console.log(`  excluded   ${state.excluded.length ? state.excluded.join(', ') : 'nothing'}`);
   console.log(
@@ -1318,7 +1375,7 @@ function listCmd(inv: Invocation): void {
   }
   console.log('');
   if (snapshots.length === 0) {
-    console.log('No snapshots. `mochi backup <dir> --snapshot` takes one after a sync.');
+    console.log(`No snapshots. '${naming.product} backup <dir> --snapshot' takes one after a sync.`);
     return;
   }
   // Apparent size rather than disk use: a snapshot is hardlinked, so what it
@@ -1351,7 +1408,7 @@ function pruneCmd(inv: Invocation): void {
   console.log(`${kept.length} snapshot${kept.length === 1 ? '' : 's'} kept.`);
 }
 
-async function verifyCmd(inv: Invocation): Promise<void> {
+async function verifyCmd(inv: Invocation, profile: BackupProfile): Promise<void> {
   const { dir, state } = existingBackup(inv);
   const json = jsonMode(inv);
   const quiet = inv.bool('quiet') || json.enabled;
@@ -1377,7 +1434,7 @@ async function verifyCmd(inv: Invocation): Promise<void> {
 
   // The files, against hashes the vault computes now. This is the part a
   // size-and-mtime sync cannot check on its own.
-  if (!quiet) console.error('Asking the vault for hashes');
+  if (!quiet) console.error(`Asking the ${naming.rootNoun} for hashes`);
   const manifest = await fetchManifest(target, state.excluded, true);
   for (const f of manifest.files.values()) {
     const dest = path.join(current, ...f.path.split('/'));
@@ -1389,11 +1446,11 @@ async function verifyCmd(inv: Invocation): Promise<void> {
       continue;
     }
     if (st.size !== f.size) {
-      problems.push({ path: f.path, problem: `size ${st.size}, the vault has ${f.size}` });
+      problems.push({ path: f.path, problem: `size ${st.size}, the ${naming.rootNoun} has ${f.size}` });
       continue;
     }
     if (f.sha256 && sha256Of(dest) !== f.sha256) {
-      problems.push({ path: f.path, problem: 'contents differ from the vault' });
+      problems.push({ path: f.path, problem: `contents differ from the ${naming.rootNoun}` });
     }
   }
   const mirrors = repos.map((p) => p.split('/').join(path.sep));
@@ -1401,10 +1458,10 @@ async function verifyCmd(inv: Invocation): Promise<void> {
   for (const rel of walkFiles(current)) {
     const asPath = rel.split('/').join(path.sep);
     if (insideMirror(asPath)) continue;
-    if (!manifest.files.has(rel)) problems.push({ path: rel, problem: 'in the backup, not in the vault' });
+    if (!manifest.files.has(rel)) problems.push({ path: rel, problem: `in the backup, not in the ${naming.rootNoun}` });
   }
   for (const entry of manifest.repos) {
-    if (!state.repos[entry.path]) problems.push({ path: entry.path, problem: 'in the vault, not in the backup' });
+    if (!state.repos[entry.path]) problems.push({ path: entry.path, problem: `in the ${naming.rootNoun}, not in the backup` });
   }
 
   // The hardlink invariant the snapshots rest on. A file with more links than
@@ -1426,7 +1483,11 @@ async function verifyCmd(inv: Invocation): Promise<void> {
     );
   } else if (problems.length === 0) {
     if (!inv.bool('quiet')) {
-      console.log(`${repos.length} mirrors and ${manifest.files.size} files check out against ${target.host}.`);
+      console.log(
+        profile.repos
+          ? `${repos.length} mirrors and ${manifest.files.size} files check out against ${target.host}.`
+          : `${manifest.files.size} files check out against ${target.host}.`
+      );
     }
   } else {
     for (const p of problems) console.log(`${p.path}: ${p.problem}`);
@@ -1448,7 +1509,7 @@ async function verifyCmd(inv: Invocation): Promise<void> {
  */
 export function backupsIndexPath(): string {
   const base = process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config');
-  return path.join(base, 'mochi', 'backups.json');
+  return path.join(base, naming.configDirName, 'backups.json');
 }
 
 export function knownBackups(): { dir: string; host: string }[] {
@@ -1498,77 +1559,58 @@ export function backupLineFor(hosts: string | string[]): string | null {
 
 const COMMON: OptionSpec[] = [JSON_OPTION, QUIET_OPTION, ...TARGET_OPTIONS];
 
-export const backupCommands: Command[] = [
-  {
-    path: ['backup'],
-    summary: 'Copy a whole vault to a directory on this machine, incrementally',
-    description: `A vault is a directory, so a backup of one is a directory too, and this makes it
-over HTTP: it needs no shell on the server, no flyctl, and no rsync at the far
-end, so it works the same against a Fly app, a VPS, a Docker deployment, and
-127.0.0.1:3000.
-
-  <dir>/current      a servable vault. Restoring is: mochi serve <dir>/current
-  <dir>/snapshots    hardlinked copies, each one also a servable vault
-  <dir>/backup.json  which vault, what is left out, and how each run went
-
-Repositories come across as mirrors, so a second run moves only the objects it
-does not have and skips a repository nothing was pushed to. Everything beside
-them - issues, pull requests, releases, sites, run history, LFS objects on the
-volume, and the vault's state files - is compared by size and modification time
-and fetched only where it differs.
-
-The token needs to belong to a site admin, because the copy includes
-vault.json. The vault URL, the exclusions, and the retention policy are recorded
-in backup.json, so a cron entry is this command and a directory.
-
-There is no vault-wide point-in-time image: the server holds no lock a client
-could take, so a run is a walk of a live tree and can catch a mixed vintage.
-Every individual file in a backup is one that really existed. See docs/backup.md.
-
-Related: mochi backup list, verify, prune.`,
-    args: [{ name: 'dir', required: true }],
-    options: [
-      { name: 'snapshot', type: 'boolean', summary: 'Take a snapshot after a successful sync, then prune' },
-      ...RETENTION_OPTIONS,
-      ...EXCLUDE_OPTIONS,
-      { name: 'checksum', type: 'boolean', summary: 'Compare hashes rather than size and modification time' },
-      ...COMMON,
-    ],
-    async run(inv) {
-      await syncCmd(inv);
-      const dir = path.resolve(inv.args[0]);
-      rememberBackup(dir, loadState(dir).host);
+/**
+ * The backup commands for one application. Mochi's are `backupCommands`
+ * below; a sibling application built on these modules (dango) passes its own
+ * profile and gets the same four commands with its own exclusions and help.
+ */
+export function makeBackupCommands(profile: BackupProfile): Command[] {
+  const noun = naming.rootNoun;
+  return [
+    {
+      path: ['backup'],
+      summary: `Copy a whole ${noun} to a directory on this machine, incrementally`,
+      description: profile.description,
+      args: [{ name: 'dir', required: true }],
+      options: [
+        { name: 'snapshot', type: 'boolean', summary: 'Take a snapshot after a successful sync, then prune' },
+        ...RETENTION_OPTIONS,
+        ...excludeOptions(profile),
+        { name: 'checksum', type: 'boolean', summary: 'Compare hashes rather than size and modification time' },
+        ...COMMON,
+      ],
+      async run(inv) {
+        await syncCmd(inv, profile);
+        const dir = path.resolve(inv.args[0]);
+        rememberBackup(dir, loadState(dir).host);
+      },
     },
-  },
-  {
-    path: ['backup', 'list'],
-    summary: "Show a backup's snapshots, and how the last run went",
-    args: [{ name: 'dir', required: true }],
-    options: [JSON_OPTION],
-    run: listCmd,
-  },
-  {
-    path: ['backup', 'verify'],
-    summary: 'Check a backup against the vault, and its mirrors against git',
-    description: `Runs git fsck --connectivity-only over every mirror, asks the vault for hashes,
-and reports anything missing, extra, or different. Exits non-zero when there is
-something to report, so it can be run from cron.`,
-    args: [{ name: 'dir', required: true }],
-    options: [...COMMON],
-    run: verifyCmd,
-  },
-  {
-    path: ['backup', 'prune'],
-    summary: 'Apply the retention policy to the snapshots, without syncing',
-    description: `Grandfather-father-son: the newest snapshot of each of the last N days, weeks,
-and months is kept and the rest are removed, evaluated in UTC. The newest
-snapshot is always kept.
+    {
+      path: ['backup', 'list'],
+      summary: "Show a backup's snapshots, and how the last run went",
+      args: [{ name: 'dir', required: true }],
+      options: [JSON_OPTION],
+      run: listCmd,
+    },
+    {
+      path: ['backup', 'verify'],
+      summary: profile.repos
+        ? `Check a backup against the ${noun}, and its mirrors against git`
+        : `Check a backup against the ${noun}`,
+      description: profile.verifyDescription,
+      args: [{ name: 'dir', required: true }],
+      options: [...COMMON],
+      run: (inv) => verifyCmd(inv, profile),
+    },
+    {
+      path: ['backup', 'prune'],
+      summary: 'Apply the retention policy to the snapshots, without syncing',
+      description: profile.pruneDescription,
+      args: [{ name: 'dir', required: true }],
+      options: [...RETENTION_OPTIONS, JSON_OPTION, QUIET_OPTION],
+      run: pruneCmd,
+    },
+  ];
+}
 
-A snapshot pins the packfiles that were current when it was taken, so a repack
-in a busy repository leaves the old pack on disk until the last snapshot
-referring to it is pruned. This is what reclaims that space.`,
-    args: [{ name: 'dir', required: true }],
-    options: [...RETENTION_OPTIONS, JSON_OPTION, QUIET_OPTION],
-    run: pruneCmd,
-  },
-];
+export const backupCommands: Command[] = makeBackupCommands(MOCHI_BACKUP);

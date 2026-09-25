@@ -2,6 +2,7 @@ import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { naming } from './naming';
 
 // The client side of authentication. A token is the password git sends over
 // Basic auth, so the place to keep it is git's own credential store: clone,
@@ -152,7 +153,7 @@ export async function rejectCredential(target: CredentialTarget, username?: stri
 // makes `mochi user list` work with no arguments and no environment.
 export function loginPath(): string {
   const base = process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config');
-  return path.join(base, 'mochi', 'login.json');
+  return path.join(base, naming.configDirName, 'login.json');
 }
 
 export function loadLogin(file = loginPath()): { host: string } | null {
@@ -197,14 +198,14 @@ export async function vaultTarget(args: {
   host?: string | null;
   token?: string | null;
 }): Promise<{ host: string; token: string }> {
-  const envHost = process.env.MOCHI_HOST?.trim() || null;
-  const envToken = process.env.MOCHI_TOKEN?.trim() || null;
+  const envHost = process.env[`${naming.envPrefix}_HOST`]?.trim() || null;
+  const envToken = process.env[`${naming.envPrefix}_TOKEN`]?.trim() || null;
   const host = (args.host ?? envHost ?? loadLogin()?.host ?? '').replace(/\/+$/, '');
   if (!host) {
     throw new CredentialError(
-      'No vault. Log in to one first:\n\n' +
-        '  mochi login https://vault.example.com\n\n' +
-        'or pass --host <url>, or set MOCHI_HOST.'
+      `No ${naming.rootNoun}. Log in to one first:\n\n` +
+        `  ${naming.product} login https://${naming.rootNoun}.example.com\n\n` +
+        `or pass --host <url>, or set ${naming.envPrefix}_HOST.`
     );
   }
   if (args.token) return { host, token: args.token };
@@ -214,8 +215,8 @@ export async function vaultTarget(args: {
   if (!stored) {
     throw new CredentialError(
       `No stored token for ${target.url}. Log in again:\n\n` +
-        `  mochi login ${target.url}\n\n` +
-        'or pass --token <token>, or set MOCHI_TOKEN.'
+        `  ${naming.product} login ${target.url}\n\n` +
+        `or pass --token <token>, or set ${naming.envPrefix}_TOKEN.`
     );
   }
   return { host, token: stored.password };

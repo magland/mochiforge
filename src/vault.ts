@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { withFileLock, writeFileAtomic } from './atomic';
 import { fileCache } from './filecache';
+import { naming } from './naming';
 import { isDotName, isValidUserName } from './scan';
 
 export const VAULT_FILE = 'vault.json';
@@ -139,7 +140,10 @@ export type VaultState =
   | { status: 'error'; message: string };
 
 export function vaultFilePath(root: string): string {
-  return path.join(root, VAULT_FILE);
+  // naming.stateFile rather than VAULT_FILE, so an application that renamed
+  // the file (see src/naming.ts) reads and writes its own; for mochiforge the
+  // two spell the same name.
+  return path.join(root, naming.stateFile);
 }
 
 function asStringArray(v: unknown): string[] | null {
@@ -329,7 +333,7 @@ export function hashToken(token: string): string {
 }
 
 export function mintToken(): { token: string; hash: string } {
-  const token = 'mochi_' + crypto.randomBytes(32).toString('hex');
+  const token = naming.tokenPrefix + crypto.randomBytes(32).toString('hex');
   return { token, hash: hashToken(token) };
 }
 
@@ -416,7 +420,7 @@ function writeVault(file: string, vault: Vault): void {
  * one, which the atomic rename already guarantees.
  */
 function editVault<T>(root: string, fn: (file: string) => T): T {
-  return withFileLock(path.join(root, `${VAULT_FILE}.lock`), () => fn(vaultFilePath(root)));
+  return withFileLock(`${vaultFilePath(root)}.lock`, () => fn(vaultFilePath(root)));
 }
 
 // Reread under the lock, refusing a pre-roles file: writeVault writes the

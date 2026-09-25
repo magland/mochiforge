@@ -1,4 +1,5 @@
 import { RemoteTarget, remoteTarget } from '../cli-api';
+import { naming } from '../naming';
 import { CliError, EXIT_AUTH, EXIT_USAGE } from './exit';
 import { readStdin } from './input';
 import { Invocation, OptionSpec } from './parse';
@@ -7,18 +8,21 @@ import { Invocation, OptionSpec } from './parse';
 // reaches a vault takes the same three options, declared once here so that they
 // are spelled and documented identically everywhere.
 
+// The summaries read naming at module load, which is after a sibling
+// application's branding module has run (it is that application's first
+// import), and is simply the mochi defaults everywhere else.
 export const TARGET_OPTIONS: OptionSpec[] = [
   {
     name: 'host',
     type: 'string',
     value: '<url>',
-    summary: 'Vault URL, ahead of MOCHI_HOST and the last login',
+    summary: `${naming.rootNoun[0].toUpperCase()}${naming.rootNoun.slice(1)} URL, ahead of ${naming.envPrefix}_HOST and the last login`,
   },
   {
     name: 'token',
     type: 'string',
     value: '<t>',
-    summary: "Token, ahead of MOCHI_TOKEN and git's credential store",
+    summary: `Token, ahead of ${naming.envPrefix}_TOKEN and git's credential store`,
   },
   {
     name: 'token-stdin',
@@ -47,6 +51,6 @@ export async function targetFrom(inv: Invocation, opts: { host?: string | null }
     token = (await readStdin()).trim();
     if (!token) throw new CliError('--token-stdin was given but stdin was empty.', EXIT_AUTH);
   }
-  const host = inv.str('host') ?? process.env.MOCHI_HOST?.trim() ?? opts.host ?? null;
+  const host = inv.str('host') ?? process.env[`${naming.envPrefix}_HOST`]?.trim() ?? opts.host ?? null;
   return await remoteTarget({ host, token });
 }

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { GitRepo } from '../git';
 import { AuthLimiter } from '../limit';
+import { naming } from '../naming';
 import { OpError, opErrorStatus } from '../ops';
 import { canAdminRepo, canReadRepo, canWriteRepo } from '../perms';
 import { findRepo } from '../scan';
@@ -37,11 +38,11 @@ export function requireApiAuth(
 ): AuthResult | null {
   const state = loadVault(root);
   if (state.status === 'missing') {
-    apiError(res, 401, 'no vault.json in this vault; restart the server to initialize one');
+    apiError(res, 401, `no ${naming.stateFile} in this ${naming.rootNoun}; restart the server to initialize one`);
     return null;
   }
   if (state.status === 'error') {
-    apiError(res, 500, `vault.json could not be read: ${state.message}`);
+    apiError(res, 500, `${naming.stateFile} could not be read: ${state.message}`);
     return null;
   }
   const m = (req.get('authorization') ?? '').match(/^bearer\s+(.+)$/i);
