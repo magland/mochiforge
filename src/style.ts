@@ -341,7 +341,14 @@ h3 { font-family: var(--font-head); font-size: var(--t-lg); line-height: 1.35; }
 }
 .dd-item:first-child { border-top: none; }
 .dd-item:hover { background: var(--surface); text-decoration: none; }
-button.dd-item { width: 100%; background: none; font: inherit; font-size: 13px; cursor: pointer; }
+/* A row that is a button (a theme, signing out) is drawn as a row that is a
+   link: the rule above it, and none of the browser's own button edges. A row
+   under a section's heading has the heading's rule already. */
+button.dd-item {
+  width: 100%; background: none; font: inherit; font-size: 13px; cursor: pointer;
+  border: none; border-top: 1px solid var(--border-soft);
+}
+.dd-section + .dd-item { border-top: none; }
 .dd-item.current { font-weight: 600; }
 .dd-item .dd-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dd-check { width: 16px; flex: none; color: var(--accent); }
