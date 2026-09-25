@@ -44,6 +44,14 @@ export interface MarkdownOpts {
    * after an @ are not users, and a link to a 404 would say otherwise.
    */
   mentions?: (name: string) => boolean;
+  /**
+   * Where `#name` points when it names a channel the reader can see, or null
+   * when it does not, in which case it stays plain text. A chat names its
+   * channels this way; channel links are off without it. A name it answers
+   * null for is not told apart from one that does not exist, so a private
+   * channel's name is not confirmed to someone outside it.
+   */
+  channels?: (name: string) => string | null;
 }
 
 // GitHub's cross-references: `#12` is that issue, and a hex string of seven
@@ -58,6 +66,12 @@ const CROSS_REF = /(?<![\w#/-])(?:#(\d{1,9})|([0-9a-f]{7,40}))(?![\w-])/g;
 // greedy over the username characters; trailing punctuation that keeps the
 // name from resolving is peeled off afterwards, so "@bob." mentions bob.
 const MENTION = /(?<![\w@.-])@([A-Za-z0-9][A-Za-z0-9._-]*)/g;
+
+// A channel named in passing: # and a channel's name, lowercase letters,
+// digits, and hyphens. As with a mention, a # inside a word (a URL's
+// fragment, an HTML entity) is refused, and a trailing hyphen that keeps the
+// name from resolving is peeled off.
+const CHANNEL_REF = /(?<![\w#&/-])#([a-z0-9][a-z0-9-]*)/g;
 
 export function isMarkdownFile(filename: string): boolean {
   const base = filename.split('/').pop() ?? filename;
@@ -389,6 +403,59 @@ function buildMarkdownIt(): MarkdownIt {
           out.push(open, label, close);
           last = m.index + 1 + name.length;
           MENTION.lastIndex = last;
+          changed = true;
+        }
+        if (last === 0) {
+          out.push(token);
+        } else if (last < token.content.length) {
+          const rest = new state.Token('text', '', 0);
+          rest.content = token.content.slice(last);
+          out.push(rest);
+        }
+      }
+      if (changed) block.children = out;
+    }
+  });
+
+  // Channel names, by the mentions rule's shape and after it.
+  md.core.ruler.push('mochi_channels', (state) => {
+    const channels = (state.env as RenderEnv).opts.channels;
+    if (!channels) return;
+    for (const block of state.tokens) {
+      if (block.type !== 'inline' || !block.children) continue;
+      const out: typeof block.children = [];
+      let inLink = 0;
+      let changed = false;
+      for (const token of block.children) {
+        if (token.type === 'link_open') inLink++;
+        else if (token.type === 'link_close') inLink--;
+        if (token.type !== 'text' || inLink > 0) {
+          out.push(token);
+          continue;
+        }
+        let last = 0;
+        CHANNEL_REF.lastIndex = 0;
+        for (let m = CHANNEL_REF.exec(token.content); m; m = CHANNEL_REF.exec(token.content)) {
+          let name = m[1];
+          let href = channels(name);
+          while (href === null && /-$/.test(name)) {
+            name = name.replace(/-+$/, '');
+            href = name === '' ? null : channels(name);
+          }
+          if (href === null) continue;
+          if (m.index > last) {
+            const before = new state.Token('text', '', 0);
+            before.content = token.content.slice(last, m.index);
+            out.push(before);
+          }
+          const open = new state.Token('link_open', 'a', 1);
+          open.attrSet('href', href);
+          const label = new state.Token('text', '', 0);
+          label.content = `#${name}`;
+          const close = new state.Token('link_close', 'a', -1);
+          out.push(open, label, close);
+          last = m.index + 1 + name.length;
+          CHANNEL_REF.lastIndex = last;
           changed = true;
         }
         if (last === 0) {
