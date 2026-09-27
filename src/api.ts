@@ -312,6 +312,7 @@ export function registerApi(
     const result = addUserToken(root, username, {
       siteAdmin: body.siteAdmin === true,
       tokenScope: tokenScope ?? undefined,
+      by: auth.username,
     });
     res.json({
       username,

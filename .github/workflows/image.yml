@@ -52,9 +52,18 @@ jobs:
     timeout-minutes: 30
     # A failed, cancelled, or skipped ci run must not publish an image. The
     # other two triggers carry no ci run to consult and are allowed through.
+    #
+    # Nor may a run for anything but a push to this repository. The branch
+    # filter above matches the head branch by name, and a pull request from a
+    # fork can name its branch main; ci runs on pull requests, so without the
+    # last two conditions a fork's commit would be built, pushed, and deployed
+    # with this repository's credentials.
     if: >-
-      github.event_name != 'workflow_run' ||
-      github.event.workflow_run.conclusion == 'success'
+      github.event_name != 'workflow_run' || (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository
+      )
     permissions:
       contents: read
       packages: write # to push to ghcr.io
@@ -230,7 +239,14 @@ jobs:
   # a live vault, which is not what dispatching a rebuild means.
   deploy:
     needs: image
-    if: github.repository == 'magland/mochiforge' && github.event_name != 'workflow_dispatch'
+    if: >-
+      github.repository == 'magland/mochiforge' &&
+      github.event_name != 'workflow_dispatch' && (
+        github.event_name != 'workflow_run' || (
+          github.event.workflow_run.event == 'push' &&
+          github.event.workflow_run.head_repository.full_name == github.repository
+        )
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:

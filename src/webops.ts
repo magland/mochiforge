@@ -2860,7 +2860,7 @@ export function registerWebOps(
       fail(res, 409, `User ${username} already exists; use Grant or Mint token on the users page instead.`, viewer, backUrl);
       return;
     }
-    const result = addUserToken(root, username, { siteAdmin: field(req, 'siteAdmin') === 'true' });
+    const result = addUserToken(root, username, { siteAdmin: field(req, 'siteAdmin') === 'true', by: viewer.auth.username });
     res.type('html').send(forms.tokenPage(viewer, username, result.token, true));
   });
 
@@ -3040,6 +3040,7 @@ export function registerWebOps(
     }
     const result = addUserToken(root, username, {
       tokenScope: tokenScope.length ? tokenScope : undefined,
+      by: viewer.auth.username,
     });
     res.type('html').send(forms.tokenPage(viewer, username, result.token, false));
   });

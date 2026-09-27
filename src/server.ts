@@ -169,7 +169,14 @@ export function createApp(root: string) {
   // internet is trusted is a restart-worthy event in a way that changing a
   // colour scheme is not. The same goes for the limits below, which hold live
   // counts that cannot be rebuilt per request without discarding them.
-  app.set('trust proxy', config.network.trustProxy);
+  //
+  // One hop, not `true`: with `true`, req.ip is the leftmost address in
+  // X-Forwarded-For, which is whatever the client wrote there when the proxy
+  // appends to the header rather than replacing it (Fly's and nginx's do),
+  // and every per-address limit would be the client's to choose again. One
+  // hop is the address the proxy itself saw, the last in the list, which is
+  // right both for a proxy that appends and for one that replaces (Caddy's).
+  app.set('trust proxy', config.network.trustProxy ? 1 : false);
 
   // Outgoing bytes, counted per repository and capped per day. The cap is read
   // through loadConfig on every call rather than captured here, unlike the rest

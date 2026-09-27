@@ -163,6 +163,18 @@ test('tokens are minted, revoked by id, and a revoked token stops authenticating
   }
 });
 
+test('a token records who minted it, unless its holder did', () => {
+  const root = makeVaultDir();
+  addUserToken(root, 'alice', { by: 'owner' });
+  addUserToken(root, 'alice', { by: 'alice' });
+  addUserToken(root, 'alice');
+  const state = loadVault(root);
+  assert.equal(state.status, 'ok');
+  if (state.status === 'ok') {
+    assert.deepEqual(state.vault.users.alice.tokens.map((t) => t.by), ['owner', undefined, undefined]);
+  }
+});
+
 test('setSiteAdmin grants and withdraws the bit, and the file carries a version', () => {
   const root = makeVaultDir();
   addUserToken(root, 'alice');

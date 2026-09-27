@@ -20,6 +20,13 @@ export interface TokenRecord {
   id?: string;
   /** When the token was minted. Absent on a record from before this existed. */
   created?: string;
+  /**
+   * Who minted it, when that was someone other than its holder: an
+   * administrator adding the user or replacing a lost token. A token is a
+   * complete way to sign in as its holder, so the holder is shown who made
+   * each of theirs. Absent where nobody said, and on records from before.
+   */
+  by?: string;
 }
 
 /** How a token is named in a listing or a revocation: its id, or a stand-in for one. */
@@ -188,6 +195,7 @@ function normalizeVault(parsed: unknown): Vault {
         const rec: TokenRecord = { hash: tRec.hash as string };
         if (typeof tRec.id === 'string' && tRec.id !== '') rec.id = tRec.id;
         if (typeof tRec.created === 'string' && tRec.created !== '') rec.created = tRec.created;
+        if (typeof tRec.by === 'string' && tRec.by !== '') rec.by = tRec.by;
         if (tRec.scope !== undefined) {
           const ts = asStringArray(tRec.scope);
           if (!ts) throw new Error(`user ${name}: token ${i} "scope" must be a list of strings`);
@@ -439,7 +447,7 @@ function readVaultForEdit(file: string): Vault {
 function addUserTokenLocked(
   file: string,
   username: string,
-  opts: { siteAdmin?: boolean; tokenScope?: string[]; token?: string }
+  opts: { siteAdmin?: boolean; tokenScope?: string[]; token?: string; by?: string }
 ): { token: string; created: boolean; user: UserRecord } {
   let vault: Vault = { users: {} };
   if (fs.existsSync(file)) {
@@ -465,6 +473,7 @@ function addUserTokenLocked(
   const { token, hash } = opts.token ? { token: opts.token, hash: hashToken(opts.token) } : mintToken();
   const rec: TokenRecord = { hash, id: crypto.randomBytes(4).toString('hex'), created: new Date().toISOString() };
   if (opts.tokenScope && opts.tokenScope.length) rec.scope = opts.tokenScope;
+  if (opts.by && opts.by !== username) rec.by = opts.by;
   user.tokens.push(rec);
   writeVault(file, vault);
   return { token, created, user };
@@ -473,7 +482,7 @@ function addUserTokenLocked(
 export function addUserToken(
   root: string,
   username: string,
-  opts: { siteAdmin?: boolean; tokenScope?: string[]; token?: string } = {}
+  opts: { siteAdmin?: boolean; tokenScope?: string[]; token?: string; by?: string } = {}
 ): { token: string; created: boolean; user: UserRecord } {
   return editVault(root, (file) => addUserTokenLocked(file, username, opts));
 }
