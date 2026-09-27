@@ -72,3 +72,18 @@ test('the sanitizer still refuses what it always refused', () => {
   assert.ok(!html.includes('//evil.example'), html);
   assert.ok(!html.includes('style='), html);
 });
+
+test('with showRefusedHtml, a refused tag is shown as text and stays inert', () => {
+  const html = renderMarkdown(
+    'Put it in <script>alert(1)</script>, not in <iframe src="https://evil.example">x</iframe>.\n\n<img src="x" onerror="alert(1)"> <b>bold</b>',
+    { ...OPTS, showRefusedHtml: true }
+  );
+  assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'), html);
+  assert.ok(html.includes('&lt;iframe&gt;x&lt;/iframe&gt;'), html);
+  assert.ok(!html.includes('<script'), html);
+  assert.ok(!html.includes('<iframe'), html);
+  assert.ok(!html.includes('onerror'), html);
+  assert.ok(html.includes('<b>bold</b>'), 'an allowed tag is still markup');
+  // Without the option a refused tag is dropped, as before.
+  assert.ok(!renderMarkdown('<script>alert(1)</script>', OPTS).includes('alert'));
+});

@@ -52,6 +52,14 @@ export interface MarkdownOpts {
    * channel's name is not confirmed to someone outside it.
    */
   channels?: (name: string) => string | null;
+  /**
+   * Whether HTML the allowlist refuses is shown as the text it was written
+   * as, rather than dropped. A document drops it, as GitHub does. A chat
+   * message that says `<script>` is usually a message about HTML, and
+   * dropping the tag and its contents would leave a hole where the writer's
+   * words were; escaped, it is inert text.
+   */
+  showRefusedHtml?: boolean;
 }
 
 // GitHub's cross-references: `#12` is that issue, and a hex string of seven
@@ -192,6 +200,7 @@ function sanitizeOptions(opts: MarkdownOpts): sanitizeHtml.IOptions {
     allowedSchemes: ['http', 'https', 'mailto', 'ftp'],
     allowedSchemesAppliedToAttributes: ['href', 'src', 'cite'],
     allowProtocolRelative: false,
+    ...(opts.showRefusedHtml ? { disallowedTagsMode: 'escape' as const, nonTextTags: [] } : {}),
     transformTags: {
       // Rewriting here rather than in a renderer rule covers links written as
       // markdown and links written as HTML with one implementation.
