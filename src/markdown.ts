@@ -60,6 +60,14 @@ export interface MarkdownOpts {
    * words were; escaped, it is inert text.
    */
   showRefusedHtml?: boolean;
+  /**
+   * Whether a single newline inside a paragraph is a line break, as GitHub
+   * shows a comment and a chat shows a message, rather than a space, as a
+   * document is read. Only a newline inside a paragraph is affected: code,
+   * lists, tables, and math are already what they are by then. markdown-it's
+   * own breaks option, but per render, since the parser is shared.
+   */
+  breaks?: boolean;
 }
 
 // GitHub's cross-references: `#12` is that issue, and a hex string of seven
@@ -479,6 +487,8 @@ function buildMarkdownIt(): MarkdownIt {
     }
   });
 
+  md.renderer.rules.softbreak = (_tokens, _idx, options, env) =>
+    options.breaks || (env as RenderEnv).opts.breaks ? '<br>\n' : '\n';
   md.renderer.rules.fence = (tokens, idx, _options, env) => {
     const token = tokens[idx];
     const info = token.info.trim().split(/\s+/)[0].toLowerCase();
