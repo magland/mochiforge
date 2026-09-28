@@ -4678,6 +4678,9 @@ YML
     [ -f "$VAULT/collections/demo/repos/ci.site/index.html" ] || {
       echo "FAIL: the site was not written to the site directory"; exit 1; }
     PASS=$((PASS+1)); echo "ok: deploy-pages published the artifact as the repository's site"
+    [ -e "$RUNS/$DEPLOY_RUN/artifacts/github-pages.tar" ] && {
+      echo "FAIL: the deployed artifact was kept beside the site it became"; exit 1; }
+    PASS=$((PASS+1)); echo "ok: and the artifact it deployed is deleted, since the site is its copy"
     check "the deployed site is served" 200 "$BASE/demo/ci/site/"
     body_has "the deployed content" 'deployed by a workflow'
     check "a remote action was fetched and cached" 200 "$BASE/demo/ci/actions/runs/$DEPLOY_RUN"

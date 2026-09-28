@@ -1,10 +1,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { pruneDeployedArtifacts } from './ci/artifacts';
+import { pruneRuns } from './ci/runs';
+import { loadConfig } from './config';
 import { execGit } from './git';
 import { repoPath } from './layout';
 import { displayName, listCollections, listRepoDirs } from './scan';
 
-// Periodic `git gc` over the repositories in the vault.
+// Periodic upkeep: `git gc` over the repositories in the vault, and CI
+// retention over their run history (runsSweep, below).
 //
 // Git adds objects and never removes them. A force push, a branch deleted, a
 // history rewritten: each one leaves the commits, trees, and blobs it abandoned
@@ -145,6 +149,33 @@ export async function gcSweep(root: string): Promise<string[]> {
 }
 
 /**
+ * Apply CI retention to every repository, and delete the site artifacts that
+ * completed runs have already deployed. Returns the bytes of deployed
+ * artifacts removed.
+ *
+ * Retention is otherwise applied only when a repository starts a run, so a
+ * repository that has gone quiet keeps whatever it had, and lowering the run
+ * count in config.json would reach it never. This is also what clears the
+ * site archives kept by runs from before deploys deleted their own.
+ */
+export function runsSweep(root: string): number {
+  const retain = loadConfig(root).ci;
+  let freed = 0;
+  for (const { name: collection } of listCollections(root)) {
+    for (const dirName of listRepoDirs(root, collection)) {
+      const repo = displayName(dirName);
+      try {
+        freed += pruneDeployedArtifacts(root, collection, repo);
+        pruneRuns(root, collection, repo, retain);
+      } catch (e) {
+        console.error(`runs ${collection}/${repo}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  }
+  return freed;
+}
+
+/**
  * Start the sweep. Returns a function that stops it, which the tests use;
  * the server itself runs it for as long as it runs.
  *
@@ -158,6 +189,12 @@ export function startMaintenance(root: string): () => void {
   const tick = async (): Promise<void> => {
     if (running) return;
     running = true;
+    try {
+      const freed = runsSweep(root);
+      if (freed > 0) console.log(`runs: removed ${Math.round(freed / 1048576)} MB of deployed site artifacts`);
+    } catch (e) {
+      console.error(`runs sweep: ${e instanceof Error ? e.message : String(e)}`);
+    }
     try {
       const collected = await gcSweep(root);
       if (collected.length > 0) {

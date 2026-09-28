@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { repoPath } from '../layout';
 import { displayName, isValidName } from '../scan';
-import { runsDir } from './runs';
+import { type JobRecord, listRuns, readJob, runsDir } from './runs';
 
 // Workflow artifacts. An artifact is a tar stream a job uploads under a name,
 // stored inside the run's directory so that it is pruned with the run and
@@ -89,6 +89,11 @@ function run(cmd: string, args: string[]): Promise<string> {
 // path is checked to be inside it, and only then does the new site replace
 // the old one by rename. A half-extracted archive therefore never becomes the
 // live site, and a crafted archive cannot write outside the vault.
+//
+// Once the site is in place the artifact is deleted. The site directory is
+// its copy, and keeping both doubled the cost of every deploy for as long as
+// the run was retained: on a vault that deploys on every push, superseded
+// site archives were most of the disk.
 export async function deploySite(
   root: string,
   collection: string,
@@ -101,7 +106,62 @@ export async function deploySite(
   if (!tar || !fs.existsSync(tar)) {
     throw new ArtifactError(`no artifact named ${artifactName} in run #${n}`);
   }
-  return installSiteFromTar(root, collection, repo, tar, { unwrapPagesArtifact: true, what: `artifact ${artifactName}` });
+  const result = await installSiteFromTar(root, collection, repo, tar, {
+    unwrapPagesArtifact: true,
+    what: `artifact ${artifactName}`,
+  });
+  fs.rmSync(tar, { force: true });
+  return result;
+}
+
+// The name of the artifact a deploy-pages step published, when a completed
+// job shows one that succeeded. The step states line up with the steps, one
+// for one, as the runner reports them. A name written as an expression cannot
+// be resolved after the fact, so such a step answers nothing and its artifact
+// is left alone.
+function deployedArtifactNames(job: JobRecord): string[] {
+  const names: string[] = [];
+  job.steps.forEach((raw, i) => {
+    const step = (raw ?? {}) as { uses?: unknown; with?: Record<string, unknown> };
+    if (typeof step.uses !== 'string' || !/^actions\/deploy-pages(@|$)/i.test(step.uses.trim())) return;
+    if (job.stepStates[i]?.conclusion !== 'success') return;
+    const given = step.with?.artifact_name;
+    const name = typeof given === 'string' && given.trim() !== '' ? given.trim() : 'github-pages';
+    if (!name.includes('${{') && isValidArtifactName(name)) names.push(name);
+  });
+  return names;
+}
+
+/**
+ * Delete the artifacts that completed runs have already deployed as the
+ * repository's site, and return how many bytes that freed.
+ *
+ * deploySite now deletes its artifact itself, so this is for runs from before
+ * it did, and for a deletion that did not happen (the server stopping between
+ * the swap and the rm). Only runs that are completed are touched, and only
+ * artifacts a deploy-pages step reported publishing: an artifact that was
+ * uploaded and never deployed is left for retention to decide.
+ */
+export function pruneDeployedArtifacts(root: string, collection: string, repo: string): number {
+  let freed = 0;
+  for (const r of listRuns(root, collection, repo)) {
+    if (r.status !== 'completed') continue;
+    for (const jobId of r.jobs) {
+      const job = readJob(root, collection, repo, r.number, jobId);
+      if (!job || job.status !== 'completed') continue;
+      for (const name of deployedArtifactNames(job)) {
+        const tar = artifactPath(root, collection, repo, r.number, name);
+        if (!tar) continue;
+        try {
+          freed += fs.statSync(tar).size;
+          fs.rmSync(tar, { force: true });
+        } catch {
+          // already gone
+        }
+      }
+    }
+  }
+  return freed;
 }
 
 /**

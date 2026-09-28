@@ -48,7 +48,7 @@ A few actions are not ordinary programs: they are clients for services that exis
 | `actions/upload-artifact` | Tars the matched paths and stores them in the run's directory in the vault |
 | `actions/download-artifact` | Restores one, or all of the run's artifacts, into the workspace |
 | `actions/configure-pages` | Reports this vault's site URL and base path, and exports `MOCHI_SITE_BASE_PATH` |
-| `actions/deploy-pages` | Publishes the `github-pages` artifact as the repository's site |
+| `actions/deploy-pages` | Publishes the `github-pages` artifact as the repository's site, then deletes the artifact |
 
 Everything else runs unmodified, `actions/setup-node` and the rest included. Note that `actions/upload-pages-artifact` is *not* substituted: it is an ordinary composite action that tars a directory and calls `upload-artifact`, so the real one works as it is, on top of Mochi Forge's `upload-artifact`.
 
@@ -229,4 +229,6 @@ Runs are the one part of a vault that grows without bound, so they are pruned. T
 { "theme": "paper", "ci": { "runs": 50, "days": 30, "artifactMb": 200 } }
 ```
 
-That keeps fewer runs than the default, and also drops completed runs older than 30 days; `days` of `0`, the default, disables the age rule. Active runs are never pruned.
+That keeps fewer runs than the default, and also drops completed runs older than 30 days; `days` of `0`, the default, disables the age rule. Active runs are never pruned, and neither is a run completed in the last 24 hours, whatever the settings say: `runs` is a floor that a busy day may exceed, so a burst of pushes cannot take away the run somebody is still reading. Retention is applied when a repository starts a run, and to every repository by the server's periodic sweep, so a lower setting reaches repositories that have gone quiet too.
+
+A site deployment does not keep its artifact. Once `deploy-pages` has published it, the archive is deleted from the run, since the site is its copy; the run keeps its logs. The periodic sweep does the same for artifacts that completed runs deployed before this was so.

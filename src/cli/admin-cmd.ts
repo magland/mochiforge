@@ -282,7 +282,7 @@ the running server had not made. Edit config.json in the vault and restart.`,
         value: '<host>',
         summary: "Hostname whose subdomains serve sites; '' to serve them sandboxed on the forge host",
       },
-      { name: 'ci-runs', type: 'int', value: '<n>', summary: 'Completed runs to keep per repository' },
+      { name: 'ci-runs', type: 'int', value: '<n>', summary: 'Completed runs to keep per repository (runs from the last 24 hours are always kept)' },
       { name: 'ci-days', type: 'int', value: '<n>', summary: 'Also drop runs older than this; 0 disables' },
       { name: 'ci-artifact-mb', type: 'int', value: '<n>', summary: 'Largest artifact a job may upload' },
       {

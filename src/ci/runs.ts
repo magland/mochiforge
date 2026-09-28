@@ -247,13 +247,25 @@ export function listRuns(root: string, collection: string, repoName: string): Ru
   return runs;
 }
 
+/**
+ * A completed run is kept for at least this long, whatever the retention
+ * settings say. A low run count is otherwise at the mercy of a busy hour: a
+ * repository whose workflows fire on every push could lose the run somebody is
+ * still reading, or the one that failed, to the twenty that followed it. Timed
+ * from completion, since a run is history from then on. A constant rather than
+ * a setting, for the reason the sweep's are (see src/maintenance.ts).
+ */
+export const MIN_RUN_AGE_MS = 24 * 60 * 60 * 1000;
+
 // Delete completed runs beyond the retention settings. Active runs are never
-// pruned regardless of age.
+// pruned regardless of age, and neither is a run completed in the last
+// MIN_RUN_AGE_MS, so `runs` is a floor that a busy day may exceed.
 export function pruneRuns(
   root: string,
   collection: string,
   repoName: string,
-  retain: { runs: number; days: number }
+  retain: { runs: number; days: number },
+  now: number = Date.now()
 ): void {
   const base = runsDir(root, collection, repoName);
   if (!base) return;
@@ -262,10 +274,16 @@ export function pruneRuns(
   const doomed = new Set<number>();
   completed.slice(Math.max(0, retain.runs)).forEach((r) => doomed.add(r.number));
   if (retain.days > 0) {
-    const cutoff = Date.now() - retain.days * 24 * 60 * 60 * 1000;
+    const cutoff = now - retain.days * 24 * 60 * 60 * 1000;
     for (const r of completed) {
       if (new Date(r.createdAt).getTime() < cutoff) doomed.add(r.number);
     }
+  }
+  for (const r of completed) {
+    const finished = new Date(r.completedAt ?? r.createdAt).getTime();
+    // An unparseable time is treated as old, so a damaged record cannot pin
+    // its run forever.
+    if (Number.isFinite(finished) && now - finished < MIN_RUN_AGE_MS) doomed.delete(r.number);
   }
   for (const n of doomed) {
     fs.rmSync(path.join(base, String(n)), { recursive: true, force: true });
