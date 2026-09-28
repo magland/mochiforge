@@ -29,14 +29,24 @@ import { displayName, listCollections, listRepoDirs } from './scan';
 // answer to "I pushed a secret, get it out now": that wants --prune=now, and
 // wants to know that nobody is mid-push.
 
-/** How often to look for repositories worth collecting. */
+/** How often to sweep, measured from the end of the last sweep. */
 const SWEEP_MS = 6 * 60 * 60 * 1000;
 /**
- * How long after the first sweep runs. Long enough that a restart does not
- * cost a sweep on a vault that is restarted a few times a day, short enough
- * that starting the server is not a way to postpone collection indefinitely.
+ * The soonest a sweep runs after the server starts, when one is due. Long
+ * enough that the request which woke a sleeping machine is answered before the
+ * sweep competes with it for the disk, and well inside the few idle minutes
+ * after which a scale-to-zero host stops the machine again.
  */
-const FIRST_SWEEP_MS = 10 * 60 * 1000;
+const MIN_SWEEP_DELAY_MS = 60 * 1000;
+/**
+ * Written at the vault root when a sweep finishes. Its mtime is what the next
+ * sweep is due from, so the schedule survives a restart: a vault on a host
+ * that stops it after a few idle minutes (Fly's autostop, say) never stays up
+ * for a timer counted from process start, and would otherwise never sweep at
+ * all. It is not vault state and backups leave it out (see ROOT_FILES in
+ * src/api/backup.ts); losing it costs one sweep sooner than needed.
+ */
+const SWEEP_STAMP = 'mochi-last-sweep';
 /**
  * Objects unreachable but newer than this are kept. Two days is far longer than
  * any push or clone this server will serve, and it is the whole safety
@@ -176,15 +186,37 @@ export function runsSweep(root: string): number {
 }
 
 /**
+ * How long after starting to run the first sweep, given when the last one
+ * finished (0 for never). A sweep that is due runs MIN_SWEEP_DELAY_MS after
+ * start; one that is not waits out the rest of SWEEP_MS, so restarting a
+ * vault neither costs a sweep nor postpones one. A stamp from the future (a
+ * clock that moved) waits at most one full interval.
+ */
+export function firstSweepDelay(lastSweepMs: number, now: number): number {
+  const due = lastSweepMs + SWEEP_MS - now;
+  return Math.min(SWEEP_MS, Math.max(MIN_SWEEP_DELAY_MS, due));
+}
+
+/**
  * Start the sweep. Returns a function that stops it, which the tests use;
  * the server itself runs it for as long as it runs.
  *
  * The timer is unref'd, so a sweep pending is never the reason a process stays
- * alive, and a sweep already running is never joined by a second one.
+ * alive, and a sweep already running is never joined by a second one. A sweep
+ * cut short by the machine stopping writes no stamp, so it is due again on the
+ * next start; the per-repository gc stamps mean it resumes rather than repeats.
  */
 export function startMaintenance(root: string): () => void {
   let running = false;
-  let interval: NodeJS.Timeout | null = null;
+  let timer: NodeJS.Timeout | null = null;
+  let stopped = false;
+  const stampFile = path.join(root, SWEEP_STAMP);
+
+  const schedule = (delay: number): void => {
+    if (stopped) return;
+    timer = setTimeout(() => void tick(), delay);
+    timer.unref();
+  };
 
   const tick = async (): Promise<void> => {
     if (running) return;
@@ -205,17 +237,21 @@ export function startMaintenance(root: string): () => void {
     } finally {
       running = false;
     }
+    // Written even when a part of the sweep failed: those failures are logged,
+    // and retrying them on every start of a machine that wakes many times a
+    // day would turn one bad repository into constant work.
+    try {
+      fs.writeFileSync(stampFile, '');
+    } catch (e) {
+      console.error(`sweep stamp: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    schedule(SWEEP_MS);
   };
 
-  const first = setTimeout(() => {
-    void tick();
-    interval = setInterval(() => void tick(), SWEEP_MS);
-    interval.unref();
-  }, FIRST_SWEEP_MS);
-  first.unref();
+  schedule(firstSweepDelay(mtimeOf(stampFile), Date.now()));
 
   return () => {
-    clearTimeout(first);
-    if (interval) clearInterval(interval);
+    stopped = true;
+    if (timer) clearTimeout(timer);
   };
 }

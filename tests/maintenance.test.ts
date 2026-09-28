@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import { test } from 'node:test';
-import { repoNeedsGc } from '../src/maintenance';
+import { firstSweepDelay, repoNeedsGc } from '../src/maintenance';
 import { migratePushPolicy } from '../src/migrate';
 import { makeBareRepo, makeVaultDir } from './helpers';
 
@@ -66,6 +66,31 @@ test('packed refs count as a change, and a stamp alone does not', () => {
   const later = new Date(Date.now() + 1000);
   fs.utimesSync(path.join(dir, 'packed-refs'), later, later);
   assert.ok(repoNeedsGc(dir));
+});
+
+// When the first sweep after a start runs. The schedule is counted from the
+// last sweep's end, recorded on disk, so a machine that sleeps between
+// requests still sweeps; a timer counted from process start never fired on one.
+const MINUTE = 60 * 1000;
+const HOUR = 60 * MINUTE;
+const NOW = Date.parse('2026-09-28T12:00:00Z');
+
+test('a vault never swept sweeps a minute after it starts', () => {
+  assert.equal(firstSweepDelay(0, NOW), MINUTE);
+});
+
+test('a sweep overdue runs a minute after start, however overdue', () => {
+  assert.equal(firstSweepDelay(NOW - 7 * HOUR, NOW), MINUTE);
+  assert.equal(firstSweepDelay(NOW - 30 * 24 * HOUR, NOW), MINUTE);
+});
+
+test('a sweep not yet due waits out the rest of the interval, so a restart neither costs nor postpones one', () => {
+  assert.equal(firstSweepDelay(NOW - HOUR, NOW), 5 * HOUR);
+  assert.equal(firstSweepDelay(NOW - (6 * HOUR - 30 * 1000), NOW), MINUTE);
+});
+
+test('a stamp from the future waits at most one interval', () => {
+  assert.equal(firstSweepDelay(NOW + 48 * HOUR, NOW), 6 * HOUR);
 });
 
 test('the push policy upgrade names only the repositories that still refuse force pushes', () => {
