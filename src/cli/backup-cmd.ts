@@ -578,6 +578,28 @@ function walkFiles(dir: string, rel = '', out: string[] = []): string[] {
 }
 
 /**
+ * Every directory under dir, as paths relative to it, each after its parent.
+ * Listed apart from the files because an empty directory can matter: a bare
+ * repository whose refs are all packed has an empty refs/, and git does not
+ * take a directory without refs/ for a repository.
+ */
+function walkDirs(dir: string, rel = '', out: string[] = []): string[] {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(path.join(dir, rel), { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const child = rel ? `${rel}/${e.name}` : e.name;
+    out.push(child);
+    walkDirs(dir, child, out);
+  }
+  return out;
+}
+
+/**
  * A snapshot of current/ as a directory of hardlinks: one inode per file and no
  * data, and still a servable vault.
  *
@@ -596,11 +618,15 @@ function takeSnapshot(dir: string, quiet: boolean): { name: string; files: numbe
   if (fs.existsSync(to)) {
     throw new CliError(`A snapshot named ${name} is already there, so this second is left alone.`, EXIT_CONFLICT);
   }
+  const dirs = walkDirs(from);
   const files = walkFiles(from);
   const maxLinks = before + 1;
   fs.mkdirSync(to, { recursive: true });
   let linked = 0;
   try {
+    // Every directory, not only those a file lands in, so that the snapshot has
+    // the empty ones too and its repositories are still repositories.
+    for (const rel of dirs) fs.mkdirSync(path.join(to, rel), { recursive: true });
     for (const rel of files) {
       const src = path.join(from, rel);
       const st = fs.lstatSync(src);

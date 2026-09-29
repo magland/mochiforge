@@ -4792,6 +4792,11 @@ SNAP1="$(ls "$BK/snapshots" | head -1)"
 [ -n "$SNAP1" ] || { echo "FAIL: --snapshot took no snapshot"; exit 1; }
 PASS=$((PASS+1)); echo "ok: a snapshot was taken ($SNAP1)"
 dir_exists "the snapshot is a vault of its own" "$BK/snapshots/$SNAP1/collections/demo/repos/proj.git"
+# The empty directories come along too. A mirror whose refs are all packed has
+# an empty refs/, and without it git does not take the snapshot's copy for a
+# repository at all.
+run_ok "the snapshot's repository is one git can read" \
+  git -C "$BK/snapshots/$SNAP1/collections/demo/repos/proj.git" rev-parse --verify HEAD
 
 # Now change the vault in each of the ways a backup has to notice: a commit
 # (which moves a ref), an issue, a comment, and a release.
