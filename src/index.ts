@@ -31,7 +31,8 @@ import { Cli, Command, Invocation, OptionSpec, dispatch, registryJson } from './
 import { TARGET_OPTIONS, targetFrom } from './cli/target';
 import { collectionAddCmd, collectionListCmd, forkCmd, importCmd } from './import-cli';
 import { syncCommand } from './cli/sync-cmd';
-import { deployDestroyCmd, deployFlyCmd, deployShowCmd } from './deploy-cli';
+import { deployDestroyCmd, deployFlyCmd, deployResetTokenCmd, deployShowCmd } from './deploy-cli';
+import { resetTokenCmd, resetTokenHelp } from './reset-token-cli';
 import {
   deployFlyRunnerCmd,
   deployFlyRunnerDestroyCmd,
@@ -518,6 +519,12 @@ Options:
     serveCmd
   ),
   raw(
+    ['reset-token'],
+    'Give a user a new token by editing the vault on disk, when the old one is lost',
+    resetTokenHelp(),
+    resetTokenCmd
+  ),
+  raw(
     ['import'],
     'Bring an existing repository into the vault',
     `Usage: mochi import <source> <collection>[/<name>] [--lfs]
@@ -789,6 +796,25 @@ See also: mochi deploy fly runner show <app>, destroy <app>, mochi runner list.
     deployFlyRunnerDestroyCmd
   ),
   raw(['deploy', 'fly', 'show'], 'What Fly has for this app, and whether the vault answers', '', deployShowCmd),
+  raw(
+    ['deploy', 'fly', 'reset-token'],
+    "Give a user of the app's vault a new token, when the owner's is lost",
+    `Usage: mochi deploy fly reset-token <app> [--user <name>] [--revoke-others]
+
+For when every other way in is gone: the owner's token lost, with no signed-in
+browser, passkey, or other site admin left to mint one from. Needs flyctl and
+the Fly login that owns the app, and nothing from the vault itself.
+
+Mints a token here, and runs mochi reset-token on the machine over fly ssh,
+handing it only the token's hash. The token is printed once, here, and checked
+against the vault. The server keeps running throughout. --user resets someone
+other than owner; --revoke-others also revokes the tokens they already hold,
+and ends the sessions started with them.
+
+The deployed image must be recent enough to have mochi reset-token; if it is
+not, mochi deploy fly <app> updates it without needing a token.`,
+    deployResetTokenCmd
+  ),
   raw(
     ['deploy', 'fly', 'destroy'],
     'Destroy the app and its volume, and with them the vault',

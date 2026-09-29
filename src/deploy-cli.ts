@@ -6,6 +6,7 @@ import { clearLogin, credentialTarget, loadLogin, readCredential, rejectCredenti
 import { backupLineFor } from './cli/backup-cmd';
 import { naming } from './naming';
 import { mintToken } from './vault';
+import { isValidUserName } from './scan';
 
 // `mochi deploy fly`: put a vault on Fly.io from one command, and deploy
 // updates to it with the same one. This is a thin driver of the fly command
@@ -408,6 +409,11 @@ export interface DeployProfile {
   /** The Fly volume's name, and where the root directory is mounted. */
   volumeName: string;
   mountPath: string;
+  /**
+   * How the image runs this application's CLI, for the commands that run on
+   * the machine over `fly ssh` rather than through the server.
+   */
+  remoteCli: string;
   /** Whether `--lfs-bucket` means anything to this application. */
   lfsBucket: boolean;
   /** How Fly's proxy counts load against the one machine. */
@@ -424,6 +430,7 @@ export const MOCHI_DEPLOY: DeployProfile = {
   buildContext: () => ({ dir: sourceRoot(), cleanup: () => undefined }),
   volumeName: 'vault',
   mountPath: '/vault',
+  remoteCli: 'node /app/dist/index.js',
   lfsBucket: true,
   concurrency: { type: 'requests', soft: 200, hard: 250 },
   contents: 'repositories, issues, pull requests, users',
@@ -1030,4 +1037,152 @@ export async function deployDestroyCmd(
     console.log('  fly storage list');
     console.log('  fly storage destroy <name>');
   }
+}
+
+/**
+ * Wait until anything at all answers at the app's URL. A machine that auto-stop
+ * has stopped is started by Fly's proxy on the first request, and `fly ssh`
+ * reaches only a running one, so this is how the machine is woken as well as
+ * how its readiness is known. Any status counts: a 401 is a server that is up.
+ */
+async function waitForAnswer(url: string, seconds = 90): Promise<string | null> {
+  const deadline = Date.now() + seconds * 1000;
+  let last = 'no answer yet';
+  while (Date.now() < deadline) {
+    try {
+      await fetch(`${url}/api/whoami`);
+      return null;
+    } catch (e) {
+      last = e instanceof Error ? e.message : String(e);
+    }
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+  return `timed out after ${seconds}s: ${last}`;
+}
+
+/**
+ * `deploy fly reset-token`: a new token for a user of a deployed vault, for when
+ * the owner's is lost and nothing else can mint one. It runs `reset-token` on
+ * the machine over `fly ssh`, so the credential it needs is the Fly login, which
+ * already amounts to control of the volume and everything on it.
+ *
+ * The token is minted here and only its hash crosses to the machine, as the
+ * deploy does with the first owner token. So it is printed by the one process
+ * that ever had it, appears in no log, and is not on the server's argv either.
+ */
+export async function deployResetTokenCmd(
+  args: string[],
+  usage: () => never,
+  profile: DeployProfile = MOCHI_DEPLOY
+): Promise<void> {
+  const product = naming.product;
+  const noun = naming.rootNoun;
+  const usageLine = `${product} deploy fly reset-token <app> [--user <name>] [--revoke-others]`;
+  let app: string | null = null;
+  let username = 'owner';
+  let revokeOthers = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '-h' || a === '--help') usage();
+    else if (a === '--user') {
+      const v = args[++i];
+      if (v === undefined || v.startsWith('-')) die(`--user takes a username.\nUsage: ${usageLine}`);
+      username = v;
+    } else if (a === '--revoke-others') revokeOthers = true;
+    else if (a.startsWith('-')) die(`Unknown option: ${a}\nUsage: ${usageLine}`);
+    else if (!app) app = a;
+    else die(`Unexpected argument: ${a}\nUsage: ${usageLine}`);
+  }
+  if (!app) die(`Which app? Usage: ${usageLine}`);
+  // The name is spliced into the command fly runs on the machine, so it is held
+  // to the shape a username has before it gets there.
+  if (!isValidUserName(username)) die(`Not a valid username: ${username}`);
+  await requireFly();
+  if (!(await appExists(app))) {
+    die(`No Fly app named '${app}' that you can see. Check the name, or: fly apps list`);
+  }
+  const ms = await machines(app);
+  if (ms.length === 0) {
+    die(`'${app}' has no machine, so no ${noun} is running there to reset a token in.`);
+  }
+  if (ms.length > 1) {
+    // Two machines mean two volumes and two vaults, and a token reset in one of
+    // them would work only when the proxy happened to pick that one.
+    die(`'${app}' has ${ms.length} machines, and a ${noun} on one volume should have one. See: ${product} deploy fly show ${app}`);
+  }
+  const machine = ms[0];
+  const url = appUrl(app);
+
+  if (machine.state !== 'started') console.log(`==> Waking '${app}' (its machine is ${machine.state ?? 'not running'})`);
+  const down = await waitForAnswer(url);
+  if (down) die(`The ${noun} at ${url} did not answer, so there is no machine to reach: ${down}\nLook at what the server said: fly logs -a ${app}`);
+
+  const { token, hash } = mintToken();
+  const remote = [
+    profile.remoteCli,
+    'reset-token',
+    profile.mountPath,
+    '--user',
+    username,
+    '--token-hash',
+    hash,
+    ...(revokeOthers ? ['--revoke-others'] : []),
+    '--json',
+  ].join(' ');
+  console.log(`==> Storing a new token for '${username}' on the machine, over fly ssh`);
+  // As node, which the server runs as; the command refuses to run as anyone
+  // else, since fly ssh's default of root would leave the file unreadable to
+  // the server. stdin is closed rather than inherited, so nothing waits on it.
+  const r = await fly(['ssh', 'console', '-a', app, '--machine', machine.id, '-u', 'node', '-q', '-C', remote], '');
+  let result: { id?: string; revoked?: string[]; kept?: string[] } | null = null;
+  for (const line of r.stdout.split(/\r?\n/).reverse()) {
+    if (!line.trim().startsWith('{')) continue;
+    try {
+      result = JSON.parse(line.trim());
+      break;
+    } catch {
+      /* not the result line */
+    }
+  }
+  if (r.code !== 0 || !result?.id) {
+    const said = `${r.stderr}\n${r.stdout}`.trim();
+    if (/unknown command/i.test(said)) {
+      die(
+        `The image deployed to '${app}' predates reset-token. Deploy the current version first,\n` +
+          `which needs no token, and then run this again:\n\n  ${product} deploy fly ${app}\n`
+      );
+    }
+    die(`Could not reset the token on the machine${said ? `:\n${said}` : '.'}`);
+  }
+
+  // Stored on the machine from here on, and nowhere else is there a copy, so it
+  // is shown before anything else can go wrong.
+  console.log('');
+  console.log(`'${username}' has a new token on ${url}. Shown here once and nowhere else: the`);
+  console.log(`${noun} keeps only its hash, and only the hash left this machine.`);
+  console.log('');
+  console.log(`  ${token}`);
+  console.log('');
+  const revoked = result.revoked ?? [];
+  const kept = result.kept ?? [];
+  if (revoked.length) {
+    console.log(`Revoked the other tokens '${username}' held (${revoked.join(', ')}); sessions started with`);
+    console.log('them have ended.');
+  } else if (kept.length) {
+    console.log(`The ${kept.length} other token${kept.length === 1 ? '' : 's'} '${username}' holds still work. If a lost one may have`);
+    console.log('been found by someone else, run this again with --revoke-others.');
+  }
+
+  try {
+    const resp = await fetch(`${url}/api/whoami`, { headers: { authorization: `Bearer ${token}` } });
+    const who = resp.ok ? ((await resp.json()) as { username?: unknown }).username : null;
+    if (who === username) console.log(`Checked: the ${noun} answers to it as '${username}'.`);
+    else console.log(`Warning: the ${noun} did not accept it (HTTP ${resp.status}). Look at: fly logs -a ${app}`);
+  } catch (e) {
+    console.log(`Could not check it against the ${noun}: ${e instanceof Error ? e.message : e}`);
+  }
+  console.log('');
+  console.log(`Sign in on the web at ${url}/login, or store it for the CLI:`);
+  console.log('');
+  console.log(`  ${product} login ${url}`);
 }

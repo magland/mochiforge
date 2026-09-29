@@ -12,6 +12,7 @@ import {
   loadVault,
   mergeContributors,
   removeUser,
+  resetUserToken,
   revokeToken,
   setSiteAdmin,
   setUserEmails,
@@ -140,6 +141,43 @@ test('bootstrapVault creates the owner as a site admin, once, and holds a preset
     assert.ok(authenticate(state.vault, 'owner', preset));
     assert.equal(state.vault.users.owner.siteAdmin, true);
     assert.ok(!state.vault.legacy);
+  }
+});
+
+test('resetUserToken adds a token to an existing user, keeps or revokes the others, and takes a hash', () => {
+  const root = makeVaultDir();
+  // No vault, and no user, are errors rather than a vault or a user created.
+  assert.throws(() => resetUserToken(root, 'owner'), /no vault.json/);
+  const boot = bootstrapVault(root);
+  assert.ok(boot);
+  assert.throws(() => resetUserToken(root, 'ownr'), /no user ownr \(site admins here: owner\)/);
+  assert.throws(() => resetUserToken(root, 'owner', { hash: 'abc' }), /64 lowercase hex/);
+
+  const first = resetUserToken(root, 'owner');
+  assert.ok(first.token);
+  assert.equal(first.kept.length, 1);
+  assert.deepEqual(first.revoked, []);
+  let state = loadVault(root);
+  assert.equal(state.status, 'ok');
+  if (state.status === 'ok') {
+    assert.ok(authenticate(state.vault, 'owner', boot.token));
+    assert.ok(authenticate(state.vault, 'owner', first.token));
+    assert.equal(state.vault.users.owner.siteAdmin, true);
+  }
+
+  // A hash from elsewhere is stored as given, and --revoke-others clears the rest.
+  const elsewhere = 'minted-on-another-machine-token';
+  const second = resetUserToken(root, 'owner', { hash: hashToken(elsewhere), revokeOthers: true });
+  assert.equal(second.token, null);
+  assert.equal(second.revoked.length, 2);
+  assert.deepEqual(second.kept, []);
+  state = loadVault(root);
+  assert.equal(state.status, 'ok');
+  if (state.status === 'ok') {
+    assert.equal(authenticate(state.vault, 'owner', boot.token), null);
+    assert.equal(authenticate(state.vault, 'owner', first.token), null);
+    assert.equal(authenticate(state.vault, 'owner', elsewhere)?.username, 'owner');
+    assert.deepEqual(state.vault.users.owner.tokens.map(tokenId), [second.id]);
   }
 });
 

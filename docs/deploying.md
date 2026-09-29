@@ -50,6 +50,20 @@ Note that the deploy stores nothing on your machine and logs you in to nothing. 
 
 Fly always terminates TLS in front of the app, so the deploy also tells the vault to believe the forwarded headers: it records `network.trustProxy: true` in the vault's `config.json` on the next start. That is what makes the clone URLs, the `Secure` cookies, and the per-address [limits](#limits) read the real scheme and address rather than the internal ones. It is only seeded, so changing it by hand afterwards sticks.
 
+### A lost owner token
+
+Because the owner token cannot be recovered, losing it is fixed by giving the owner a new one. Look first for a way in that still works: a browser that is still signed in, a passkey, or another site admin can each mint a token from `/admin/users/owner`. When none is left, the Fly login that owns the app is enough:
+
+```bash
+mochi deploy fly reset-token my-vault-name
+```
+
+This wakes the machine if it has stopped, mints a token on your machine, and runs `mochi reset-token` on the machine over `fly ssh`, handing it only the token's hash. The token is printed once, checked against the vault, and followed by the `mochi login` that stores it. The server keeps running throughout, since it rereads `vault.json` on every request. The owner's other tokens keep working; `--revoke-others` revokes them as well and ends the sessions started with them, which is what to use if the lost token may have been found by someone else. `--user <name>` resets someone other than `owner`.
+
+This grants nothing new. Anyone who can `fly ssh` into the app can already read and rewrite everything on its volume, so the Fly login was always the credential that stood behind the vault. The image must be recent enough to have the command; an older one is updated with `mochi deploy fly my-vault-name`, which needs no token.
+
+On [a machine of your own](#a-machine-of-your-own), the same command runs against the directory: `mochi reset-token /path/to/vault`, or `docker exec -u node mochi node /app/dist/index.js reset-token /vault` in Docker. Run it as the user the server runs as. The file is rewritten readable by its writer alone, so a copy written by root would lock the server out, and the command refuses to run as anyone else.
+
 ### Deploying updates, and changing settings
 
 The same command deploys an update:

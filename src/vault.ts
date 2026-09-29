@@ -569,6 +569,52 @@ export function bootstrapVault(
 
 
 /**
+ * Give an existing user a new token by writing vault.json directly, for the
+ * operator of a vault whose every other way in is gone: the owner's token lost,
+ * no passkey, no session, no second administrator. Everything else that mints a
+ * token goes through a running server and needs a credential to do it; this
+ * needs only the directory, which is the credential an operator already has.
+ *
+ * A caller may supply the hash instead of taking a minted token, so that the
+ * token can be minted on one machine and only its hash handed to the machine
+ * holding the vault. That is how `deploy fly reset-token` keeps the token off
+ * the server entirely. The user must already exist: a reset that quietly
+ * created a user for a mistyped name would report success and change nothing.
+ */
+export function resetUserToken(
+  root: string,
+  username: string,
+  opts: { hash?: string; revokeOthers?: boolean } = {}
+): { token: string | null; id: string; revoked: string[]; kept: string[] } {
+  if (opts.hash !== undefined && !/^[0-9a-f]{64}$/.test(opts.hash)) {
+    throw new Error('a token hash is 64 lowercase hex characters, the SHA-256 of the token');
+  }
+  return editVault(root, (file) => {
+    if (!fs.existsSync(file)) throw new Error(`no ${naming.stateFile} in ${root}; is this the right directory?`);
+    const vault = readVaultForEdit(file);
+    const user = vault.users[username];
+    if (!user) {
+      const admins = Object.keys(vault.users).filter((n) => vault.users[n].siteAdmin);
+      throw new Error(
+        `no user ${username}` + (admins.length ? ` (site admins here: ${admins.join(', ')})` : '')
+      );
+    }
+    const minted = opts.hash ? { token: null, hash: opts.hash } : mintToken();
+    const revoked = opts.revokeOthers ? user.tokens.map(tokenId) : [];
+    if (opts.revokeOthers) user.tokens = [];
+    const rec: TokenRecord = {
+      hash: minted.hash,
+      id: crypto.randomBytes(4).toString('hex'),
+      created: new Date().toISOString(),
+    };
+    const kept = user.tokens.map(tokenId);
+    user.tokens.push(rec);
+    writeVault(file, vault);
+    return { token: minted.token, id: rec.id as string, revoked, kept };
+  });
+}
+
+/**
  * Revoke one token by its id. Revoking the token currently in use is allowed and
  * reported plainly rather than refused: locking yourself out is your business,
  * and vault.json remains hand-editable either way.
