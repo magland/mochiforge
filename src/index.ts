@@ -29,7 +29,7 @@ import { readStdin } from './cli/input';
 import { JSON_OPTION, jsonMode, pickFields, pickObject, printJson } from './cli/output';
 import { Cli, Command, Invocation, OptionSpec, dispatch, registryJson } from './cli/parse';
 import { TARGET_OPTIONS, targetFrom } from './cli/target';
-import { collectionAddCmd, collectionListCmd, forkCmd, importCmd } from './import-cli';
+import { forkCmd, importCmd } from './import-cli';
 import { syncCommand } from './cli/sync-cmd';
 import { deployDestroyCmd, deployFlyCmd, deployResetTokenCmd, deployShowCmd } from './deploy-cli';
 import { resetTokenCmd, resetTokenHelp } from './reset-token-cli';
@@ -560,19 +560,69 @@ Options are those of mochi import.`,
     forkCmd
   ),
   syncCommand,
-  raw(
-    ['collection', 'add'],
-    'Create an empty collection',
-    `Pushing to a new path creates its collection on the way, so this is for the
+  {
+    path: ['collection', 'add'],
+    summary: 'Create an empty collection',
+    description: `Pushing to a new path creates its collection on the way, so this is for the
 other order: making the collection first and filling it afterwards.`,
-    collectionAddCmd
-  ),
-  raw(
-    ['collection', 'list'],
-    "Show the vault's collections and how many repositories each holds",
-    '',
-    collectionListCmd
-  ),
+    args: [{ name: 'name', required: true }],
+    options: [JSON_OPTION, ...TARGET_OPTIONS],
+    async run(inv) {
+      const target = await targetFrom(inv);
+      const data = await api(target, 'POST', '/api/collections', { name: inv.args[0] });
+      const json = jsonMode(inv);
+      if (json.enabled) {
+        printJson(pickObject(data, json.fields));
+        return;
+      }
+      console.log(`Created collection '${data.name}' on ${target.host}`);
+      console.log(`  ${target.host}/${encodeURIComponent(String(data.name))}`);
+      console.log('');
+      console.log('It has no repositories yet. Put one in it with');
+      console.log(`  mochi import https://github.com/owner/repo ${data.name}`);
+    },
+  },
+  {
+    path: ['collection', 'list'],
+    summary: "Show the vault's collections and how many repositories each holds",
+    options: [JSON_OPTION, ...TARGET_OPTIONS],
+    async run(inv) {
+      const target = await targetFrom(inv);
+      const data = await api(target, 'GET', '/api/collections');
+      const collections = (data.collections ?? []) as { name: string; repoCount: number }[];
+      const json = jsonMode(inv);
+      if (json.enabled) {
+        printJson({ collections: pickFields(collections as unknown as Record<string, unknown>[], json.fields) });
+        return;
+      }
+      if (collections.length === 0) {
+        console.log(`No collections on ${target.host}`);
+        return;
+      }
+      const width = Math.max(...collections.map((c) => c.name.length));
+      for (const c of collections) {
+        console.log(`${c.name.padEnd(width)}  ${c.repoCount} ${c.repoCount === 1 ? 'repository' : 'repositories'}`);
+      }
+    },
+  },
+  {
+    path: ['collection', 'owner', 'list'],
+    summary: 'Show the owners listed on a collection',
+    description: `The user the collection is named after owns it by name and is not listed.`,
+    args: [{ name: 'collection', required: true }],
+    options: [JSON_OPTION, ...TARGET_OPTIONS],
+    async run(inv) {
+      const target = await targetFrom(inv);
+      const data = await api(target, 'GET', `/api/collections/${encodeURIComponent(inv.args[0])}`);
+      const owners = { name: data.name, owners: data.owners ?? [] };
+      const json = jsonMode(inv);
+      if (json.enabled) {
+        printJson(pickObject(owners, json.fields));
+        return;
+      }
+      console.log(`Owners of ${owners.name}: ${(owners.owners as string[]).join(', ') || '(none listed)'}`);
+    },
+  },
   {
     path: ['collection', 'owner', 'add'],
     summary: 'Make a user an owner of a collection',

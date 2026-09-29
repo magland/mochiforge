@@ -244,65 +244,6 @@ export async function importCmd(
   if (!a.lfs) console.log('  (Git LFS objects, if it has any, were not carried over; import again with --lfs)');
 }
 
-interface CollectionArgs {
-  name: string | null;
-  host: string | null;
-  token: string | null;
-}
-
-function parseCollectionArgs(args: string[], usage: () => never): CollectionArgs {
-  const out: CollectionArgs = { name: null, host: null, token: null };
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === '-h' || a === '--help') usage();
-    else if (a === '--host') out.host = args[++i];
-    else if (a === '--token') out.token = args[++i];
-    else if (a.startsWith('-')) {
-      console.error(`Unknown option: ${a}`);
-      process.exit(1);
-    } else if (!out.name) out.name = a;
-    else {
-      console.error(`Unexpected argument: ${a}`);
-      process.exit(1);
-    }
-  }
-  return out;
-}
-
-export async function collectionAddCmd(args: string[], usage: () => never): Promise<void> {
-  const a = parseCollectionArgs(args, usage);
-  if (!a.name) {
-    console.error('Usage: mochi collection add <name>');
-    process.exit(1);
-  }
-  const target = await remoteTarget(a);
-  const data = await api(target, 'POST', '/api/collections', { name: a.name });
-  console.log(`Created collection '${data.name}' on ${target.host}`);
-  console.log(`  ${target.host}/${encodeURIComponent(String(data.name))}`);
-  console.log('');
-  console.log('It has no repositories yet. Put one in it with');
-  console.log(`  mochi import https://github.com/owner/repo ${data.name}`);
-}
-
-export async function collectionListCmd(args: string[], usage: () => never): Promise<void> {
-  const a = parseCollectionArgs(args, usage);
-  if (a.name) {
-    console.error(`Unexpected argument: ${a.name}`);
-    process.exit(1);
-  }
-  const target = await remoteTarget(a);
-  const data = await api(target, 'GET', '/api/collections');
-  const collections = (data.collections ?? []) as { name: string; repoCount: number }[];
-  if (collections.length === 0) {
-    console.log(`No collections on ${target.host}`);
-    return;
-  }
-  const width = Math.max(...collections.map((c) => c.name.length));
-  for (const c of collections) {
-    console.log(`${c.name.padEnd(width)}  ${c.repoCount} ${c.repoCount === 1 ? 'repository' : 'repositories'}`);
-  }
-}
-
 /** `mochi fork`: `mochi import` that records where the repository came from. */
 export function forkCmd(args: string[], usage: () => never): Promise<void> {
   return importCmd(args, usage, { fork: true });

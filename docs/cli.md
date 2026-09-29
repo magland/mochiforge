@@ -454,6 +454,7 @@ mochi collab list mycollection/webapp
 mochi collab remove mycollection/webapp bob
 mochi collection owner add mycollection alice # the admin role on everything in mycollection
 mochi collection owner remove mycollection alice
+mochi collection owner list mycollection      # the owners listed on it
 mochi user grant alice --site-admin           # everything, everywhere
 mochi user list                               # review who holds tokens and the site-admin bit
 ```

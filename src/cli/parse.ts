@@ -378,9 +378,16 @@ export async function dispatch(cli: Cli, argv: string[]): Promise<void> {
       // A group may nest twice ('user token list'), so a second word that names
       // one of those is a group in its own right rather than a misspelling.
       const deeper = under.filter((c) => c.path.length > 2 && c.path[1] === sub);
-      if (deeper.length && argv[2] === undefined) {
+      if (deeper.length) {
+        const thirds = [...new Set(deeper.map((c) => c.path[2]))];
+        const third = argv[2];
+        if (third === undefined || HELP_FLAGS.has(third)) {
+          throw new CliError(`'mochi ${head} ${sub}' needs a command: ${thirds.join(', ')}`, EXIT_USAGE);
+        }
+        const near = nearest(third, thirds);
         throw new CliError(
-          `'mochi ${head} ${sub}' needs a command: ${[...new Set(deeper.map((c) => c.path[2]))].join(', ')}`,
+          `unknown command 'mochi ${head} ${sub} ${third}'` +
+            (near ? `; did you mean '${head} ${sub} ${near}'?` : `. One of: ${thirds.join(', ')}`),
           EXIT_USAGE
         );
       }

@@ -61,7 +61,7 @@ job       run               execute a run's manual jobs here, from a minted comm
 user      add grant list view delete token list token revoke
 runner    add run list wake remove
 config    view set
-collection add list rename delete owner add owner remove
+collection add list rename delete owner list owner add owner remove
 backup    <dir>             pull a whole vault onto this machine; list verify prune
 api       <path>            any route, for anything without a typed command
 ```

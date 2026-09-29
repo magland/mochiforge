@@ -2668,6 +2668,17 @@ check "the imported repository is browsable" 200 "$BASE/fromcli/importsrc/blob/m
 body_has "with the source's content" 'imported by the cli'
 run_ok "collection list reports it" cli collection list
 body_has "with a repository count" 'fromcli.*1 repository'
+run_ok "collection list --json" cli collection list --json
+stdout_is_json "collection list --json is parseable"
+body_has "with each collection's repository count" '"repoCount": 1'
+run_code "collection list rejects an unknown option as a usage error" 2 cli collection list --bogus
+run_ok "collection owner list" cli collection owner list fromcli
+body_has "saying when no owner is listed" 'Owners of fromcli: (none listed)'
+run_ok "collection owner list --json" cli collection owner list fromcli --json=owners
+body_has "with the owners as a list" '"owners": \[\]'
+run_code "collection owner list of one that is not there is a 404" 4 cli collection owner list nosuchone
+run_code "an unknown third word in a nested group is a usage error" 2 cli collection owner lst
+err_has "naming what was typed and the nearest command" "did you mean 'collection owner list'"
 run_fails "importing over an existing repository is refused" cli import "$TMP/importsrc" fromcli
 body_has "and says how to import under another name" 'another-name'
 run_ok "import creates the collection by pushing to it" cli import "$TMP/importsrc" madebyimport
