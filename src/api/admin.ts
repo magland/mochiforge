@@ -1,4 +1,4 @@
-import { Express, Response } from 'express';
+import { Express } from 'express';
 import * as fs from 'fs';
 import { CiEngine } from '../ci/engine';
 import { CiConfig, LimitsConfig, SitesConfig, isPlausibleHostname, loadConfig, saveConfig } from '../config';
@@ -17,8 +17,7 @@ import {
   storedCollectionAlias,
 } from '../sitesettings';
 import { DEFAULT_THEME, findTheme, themeNames } from '../themes';
-import { canAdminCollection, isSiteAdmin, removeUserGrants, tokenIsScoped } from '../perms';
-import { AuthResult, loadVault, removeUser, revokeToken, tokenId } from '../vault';
+import { canAdminCollection, isSiteAdmin } from '../perms';
 import { apiError, bodyOf, requireApiAuth, sendOpError, stringField } from './auth';
 
 // Administration: users, their tokens, collections, and the vault's own settings.
@@ -176,140 +175,6 @@ export function registerAdminApi(
       return;
     }
     res.json({ deleted: name });
-  });
-
-  // ---- users and their tokens ----
-
-  // A token-scoped token reaches its globs and nothing else, and in
-  // particular administers nothing (src/perms.ts). Its own user's token list
-  // is something to administer: a scoped token handed to a script could
-  // otherwise list and revoke the unrestricted tokens beside it, locking the
-  // user out of git and the CLI.
-  function requireUnscoped(auth: AuthResult, res: Response): boolean {
-    if (!tokenIsScoped(auth)) return true;
-    apiError(res, 403, 'a token-scoped token may not list or revoke tokens');
-    return false;
-  }
-
-  app.get('/api/users/:name', (req, res) => {
-    const auth = requireApiAuth(root, limiter, req, res);
-    if (!auth) return;
-    const state = loadVault(root);
-    if (state.status !== 'ok') {
-      apiError(res, 500, 'vault unavailable');
-      return;
-    }
-    const user = state.vault.users[req.params.name];
-    if (!user) {
-      apiError(res, 404, `no user ${req.params.name}`);
-      return;
-    }
-    // A user may read their own record; reading anyone else's takes a site
-    // admin.
-    if (req.params.name !== auth.username && !isSiteAdmin(auth)) {
-      apiError(res, 403, 'site admin required to touch another user');
-      return;
-    }
-    if (!requireUnscoped(auth, res)) return;
-    res.json({
-      name: req.params.name,
-      siteAdmin: user.siteAdmin === true,
-      tokens: user.tokens.map((t) => ({ id: tokenId(t), created: t.created ?? null, scope: t.scope ?? null })),
-    });
-  });
-
-  app.get('/api/users/:name/tokens', (req, res) => {
-    const auth = requireApiAuth(root, limiter, req, res);
-    if (!auth) return;
-    const state = loadVault(root);
-    if (state.status !== 'ok') {
-      apiError(res, 500, 'vault unavailable');
-      return;
-    }
-    const user = state.vault.users[req.params.name];
-    if (!user) {
-      apiError(res, 404, `no user ${req.params.name}`);
-      return;
-    }
-    if (req.params.name !== auth.username && !isSiteAdmin(auth)) {
-      apiError(res, 403, 'site admin required to touch another user');
-      return;
-    }
-    if (!requireUnscoped(auth, res)) return;
-    // Never the token, and never the hash either: an id is what revocation
-    // takes, and the hash is a credential-shaped thing with no reason to travel.
-    res.json({
-      tokens: user.tokens.map((t) => ({ id: tokenId(t), created: t.created ?? null, scope: t.scope ?? null })),
-    });
-  });
-
-  app.delete('/api/users/:name/tokens/:id', (req, res) => {
-    const auth = requireApiAuth(root, limiter, req, res);
-    if (!auth) return;
-    const state = loadVault(root);
-    if (state.status !== 'ok') {
-      apiError(res, 500, 'vault unavailable');
-      return;
-    }
-    const user = state.vault.users[req.params.name];
-    if (!user) {
-      apiError(res, 404, `no user ${req.params.name}`);
-      return;
-    }
-    const ownToken = req.params.name === auth.username && tokenId(auth.token) === req.params.id;
-    if (req.params.name !== auth.username && !isSiteAdmin(auth)) {
-      apiError(res, 403, 'site admin required to touch another user');
-      return;
-    }
-    if (!requireUnscoped(auth, res)) return;
-    let result;
-    try {
-      result = revokeToken(root, req.params.name, req.params.id);
-    } catch (e) {
-      apiError(res, 500, e instanceof Error ? e.message : String(e));
-      return;
-    }
-    if (!result.revoked) {
-      apiError(res, 404, `no token ${req.params.id} for ${req.params.name}`);
-      return;
-    }
-    // Revoking the token in use is allowed. It is reported rather than refused:
-    // locking yourself out is your business, and vault.json stays hand-editable.
-    res.json({ revoked: req.params.id, remaining: result.remaining, wasThisToken: ownToken });
-  });
-
-  app.delete('/api/users/:name', (req, res) => {
-    const auth = requireApiAuth(root, limiter, req, res);
-    if (!auth) return;
-    const state = loadVault(root);
-    if (state.status !== 'ok') {
-      apiError(res, 500, 'vault unavailable');
-      return;
-    }
-    const user = state.vault.users[req.params.name];
-    if (!user) {
-      apiError(res, 404, `no user ${req.params.name}`);
-      return;
-    }
-    if (!isSiteAdmin(auth)) {
-      apiError(res, 403, 'site admin required to touch another user');
-      return;
-    }
-    // Deleting yourself would leave a vault an owner cannot administer except by
-    // hand, and unlike revoking one token it cannot be undone by minting another.
-    if (req.params.name === auth.username) {
-      apiError(res, 409, 'a user cannot delete themselves; another admin can, or edit vault.json by hand');
-      return;
-    }
-    if (String(req.query.confirm ?? '') !== req.params.name) {
-      apiError(res, 400, `to remove this user and every token they hold, send ?confirm=${req.params.name}`);
-      return;
-    }
-    const removed = removeUser(root, req.params.name);
-    // Their grants go with them: a collaborator entry or an owners listing
-    // left behind would belong to whoever is given this name next.
-    if (removed) removeUserGrants(root, req.params.name);
-    res.json({ deleted: req.params.name, removed });
   });
 
   // ---- vault settings ----

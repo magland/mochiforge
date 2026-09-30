@@ -5,7 +5,7 @@ import { IconName, icon } from './icons';
 import { isMarkdownFile } from './markdown';
 import { markdownEditor, previewUrl } from './mdedit';
 import { MARK } from './logo';
-import { naming } from './naming';
+import { adminSectionEnabled, naming } from './naming';
 import { formatSize, timeTag } from './render';
 import { Viewer } from './session';
 import { Theme } from './themes';
@@ -1279,11 +1279,11 @@ export function adminShell(
     'sliders'
   )}Administration</h3><div class="side-links">
 ${item('users', '/admin/users', 'Users', 'people')}
-${item('runners', '/admin/runners', 'Runners', 'server')}
-${canVault ? item('github', '/admin/github', 'GitHub sign-in', 'person') : ''}
-${canVault ? item('egress', '/admin/egress', 'Egress', 'upload') : ''}
-${canVault ? item('appearance', '/admin/appearance', 'Appearance', 'appearance') : ''}
-${canVault ? item('settings', '/admin/settings', 'Vault settings', 'sliders') : ''}
+${adminSectionEnabled('runners') ? item('runners', '/admin/runners', 'Runners', 'server') : ''}
+${canVault && adminSectionEnabled('github') ? item('github', '/admin/github', 'GitHub sign-in', 'person') : ''}
+${canVault && adminSectionEnabled('egress') ? item('egress', '/admin/egress', 'Egress', 'upload') : ''}
+${canVault && adminSectionEnabled('appearance') ? item('appearance', '/admin/appearance', 'Appearance', 'appearance') : ''}
+${canVault && adminSectionEnabled('settings') ? item('settings', '/admin/settings', 'Vault settings', 'sliders') : ''}
 </div></div></aside>`;
   // The bar locates an admin page the way it locates a repository page: the
   // trail up from here, for after the heading has scrolled away.
@@ -1313,24 +1313,24 @@ export function adminIndexPage(viewer: Viewer, canVault: boolean): string {
   const content = html`<h1>Administration</h1>
 <div class="card-list">
 ${card('/admin/users', 'Users', 'Create users, grant site admin, mint tokens.')}
-${card('/admin/runners', 'Runners', 'Register the machines that execute workflow jobs.')}
+${adminSectionEnabled('runners') ? card('/admin/runners', 'Runners', 'Register the machines that execute workflow jobs.') : ''}
 ${
-  canVault
-    ? card('/admin/github', 'GitHub sign-in', 'Let approved GitHub accounts sign in to this vault.')
+  canVault && adminSectionEnabled('github')
+    ? card('/admin/github', 'GitHub sign-in', `Let approved GitHub accounts sign in to this ${naming.rootNoun}.`)
     : ''
 }
 ${
-  canVault
+  canVault && adminSectionEnabled('egress')
     ? card('/admin/egress', 'Egress', 'See what has been sent out today, per repository, and cap what a day may send.')
     : ''
 }
 ${
-  canVault
-    ? card('/admin/appearance', 'Appearance', 'Choose the theme this vault is served with.')
+  canVault && adminSectionEnabled('appearance')
+    ? card('/admin/appearance', 'Appearance', `Choose the theme this ${naming.rootNoun} is served with.`)
     : ''
 }
 ${
-  canVault
+  canVault && adminSectionEnabled('settings')
     ? card('/admin/settings', 'Vault settings', 'The sites hostname, CI retention, forwarded headers, and rate limits.')
     : ''
 }

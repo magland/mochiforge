@@ -20,6 +20,7 @@ import { apiCommand } from './cli/api-cmd';
 import { issueCommands } from './cli/issue-cmd';
 import { prCommands } from './cli/pr-cmd';
 import { adminCommands } from './cli/admin-cmd';
+import { formatStanding, userCommands } from './cli/user-cmd';
 import { backupCommands } from './cli/backup-cmd';
 import { releaseCommands } from './cli/release-cmd';
 import { repoCommands } from './cli/repo-cmd';
@@ -27,7 +28,7 @@ import { runCommands } from './cli/run-cmd';
 import { CliError, EXIT_AUTH, EXIT_FAIL, EXIT_USAGE, jsonErrorsWanted } from './cli/exit';
 import { readStdin } from './cli/input';
 import { JSON_OPTION, jsonMode, pickFields, pickObject, printJson } from './cli/output';
-import { Cli, Command, Invocation, OptionSpec, dispatch, registryJson } from './cli/parse';
+import { Cli, Command, Invocation, dispatch, registryJson } from './cli/parse';
 import { TARGET_OPTIONS, targetFrom } from './cli/target';
 import { forkCmd, importCmd } from './import-cli';
 import { syncCommand } from './cli/sync-cmd';
@@ -48,7 +49,6 @@ import {
   runnerWakeCmd,
 } from './runner-cli';
 import { seedTrustProxy } from './config';
-import { isValidUserName } from './scan';
 import { DEFAULT_THEME, themeNames } from './themes';
 import { bootstrapVault } from './vault';
 
@@ -157,148 +157,6 @@ async function serveCmd(args: string[], usage: () => never) {
     console.log(`Mochi Forge serving vault ${vault}`);
     console.log(`  ${url}`);
   });
-}
-
-// ---- users ----
-
-// Removed rather than renamed, and kept only to say so: glob scopes on users
-// became roles held where they apply, so a --scope that silently became an
-// unknown option would look like a typo rather than like a change of design.
-const REMOVED_SCOPE_OPTIONS: OptionSpec[] = [
-  { name: 'scope', type: 'string[]', hidden: true, summary: 'Removed: access is granted where it applies' },
-  { name: 'admin', type: 'string[]', hidden: true, summary: 'Removed: see --site-admin and collection owners' },
-];
-
-function refuseScopeOptions(inv: Invocation): void {
-  if (inv.list('scope').length || inv.list('admin').length) {
-    throw new CliError(
-      '--scope and --admin are gone: a user owns the collection named after them, and anything more is granted ' +
-        "where it applies. Use 'mochi collab add' for a repository, 'mochi collection owner add' for a " +
-        'collection, or --site-admin for everything.',
-      EXIT_USAGE
-    );
-  }
-}
-
-// Removed rather than renamed, and kept only to say so: a `--vault` that
-// silently became an unknown option would look like a typo rather than like a
-// change of design.
-const VAULT_OPTION: OptionSpec = {
-  name: 'vault',
-  type: 'string',
-  hidden: true,
-  summary: 'Removed: user commands talk to a running server',
-};
-
-function refuseVaultOption(inv: Invocation): void {
-  if (inv.str('vault') !== null) {
-    throw new CliError(
-      '--vault is gone: user commands talk to a running server. Run `mochi login <url>` first.',
-      EXIT_USAGE
-    );
-  }
-}
-
-function formatStanding(user: { username?: string; name?: string; siteAdmin?: boolean }): string {
-  const name = user.username ?? user.name ?? '';
-  return user.siteAdmin ? 'site admin' : `owns collection '${name}' by name`;
-}
-
-async function userAddCmd(inv: Invocation) {
-  refuseVaultOption(inv);
-  refuseScopeOptions(inv);
-  const username = inv.args[0];
-  if (!isValidUserName(username)) {
-    throw new CliError(
-      'A valid username is required (letters, digits, dot, underscore, dash, not starting with a dot)',
-      EXIT_USAGE
-    );
-  }
-  const tokenScope = inv.list('token-scope');
-  const target = await targetFrom(inv);
-  const data = await api(target, 'POST', '/api/users', {
-    username,
-    siteAdmin: inv.bool('site-admin') || undefined,
-    tokenScope: tokenScope.length ? tokenScope : undefined,
-  });
-  const json = jsonMode(inv);
-  if (json.enabled) {
-    printJson(pickObject(data, json.fields));
-    return;
-  }
-  console.log(
-    data.created
-      ? `Created user '${data.username}' on ${target.host}`
-      : `Minted a new token for existing user '${data.username}'`
-  );
-  console.log(`  ${formatStanding(data as { username: string; siteAdmin?: boolean })}`);
-  if (tokenScope.length) console.log(`  this token is restricted to: ${tokenScope.join(', ')}`);
-  console.log('');
-  console.log('Token (copy it now; only its hash is stored):');
-  console.log(`  ${data.token}`);
-  console.log('');
-  console.log(`Use it as the password with username '${data.username}' when git asks for credentials.`);
-}
-
-async function userGrantCmd(inv: Invocation) {
-  refuseVaultOption(inv);
-  refuseScopeOptions(inv);
-  const username = inv.args[0];
-  const grant = inv.bool('site-admin');
-  const revoke = inv.bool('revoke-site-admin');
-  if (grant === revoke) {
-    throw new CliError(
-      `Pass exactly one of --site-admin or --revoke-site-admin. Repository and collection access is granted with ` +
-        `'mochi collab add' and 'mochi collection owner add'.`,
-      EXIT_USAGE
-    );
-  }
-  const target = await targetFrom(inv);
-  const data = await api(target, 'POST', `/api/users/${encodeURIComponent(username)}/grant`, {
-    siteAdmin: grant,
-  });
-  const json = jsonMode(inv);
-  if (json.enabled) {
-    printJson(pickObject(data, json.fields));
-    return;
-  }
-  console.log(`${data.username}: ${data.siteAdmin ? 'now a site admin' : 'no longer a site admin'}`);
-}
-
-async function userListCmd(inv: Invocation) {
-  refuseVaultOption(inv);
-  const target = await targetFrom(inv);
-  const data = await api(target, 'GET', '/api/users');
-  const users = (data.users ?? []) as { name: string; siteAdmin?: boolean; tokens: number }[];
-  const json = jsonMode(inv);
-  if (json.enabled) {
-    printJson({ users: pickFields(users as unknown as Record<string, unknown>[], json.fields) });
-    return;
-  }
-  if (users.length === 0) {
-    console.log(`No users on ${target.host}`);
-    return;
-  }
-  const width = Math.max(...users.map((u) => u.name.length));
-  for (const u of users) {
-    const tokens = `${u.tokens} token${u.tokens === 1 ? '' : 's'}`;
-    console.log(`${u.name.padEnd(width)}  ${tokens.padEnd(9)}  ${u.siteAdmin ? 'site admin' : ''}`.trimEnd());
-  }
-}
-
-async function whoamiCmd(inv: Invocation) {
-  const target = await targetFrom(inv);
-  const data = await api(target, 'GET', '/api/whoami');
-  const json = jsonMode(inv);
-  if (json.enabled) {
-    printJson(pickObject(data, json.fields));
-    return;
-  }
-  console.log(`${data.username} @ ${target.host}`);
-  console.log(`  ${formatStanding(data as { username: string; siteAdmin?: boolean })}`);
-  const owned = (data.ownedCollections ?? []) as string[];
-  if (owned.length) console.log(`  collections: ${owned.join(', ')}`);
-  if (data.tokenScope) console.log(`  this token is restricted to: ${(data.tokenScope as string[]).join(', ')}`);
 }
 
 // ---- login and logout ----
@@ -672,55 +530,7 @@ is named after owns it by name and needs no entry.`,
       console.log(`Owners of ${data.name}: ${((data.owners ?? []) as string[]).join(', ') || '(none listed)'}`);
     },
   },
-  {
-    path: ['user', 'add'],
-    summary: 'Create a user and print its token once',
-    description: `A user owns the collection named after them, the way a GitHub account owns its
-namespace: they create repositories there and administer them. Anything more is
-granted where it applies ('mochi collab add' on a repository, 'mochi
-collection owner add' on a collection) or with --site-admin. Run again on an
-existing user to mint an additional token. Only a SHA-256 hash of a token is
-ever stored, so the token is shown once and cannot be recovered afterwards.`,
-    args: [{ name: 'username', required: true }],
-    options: [
-      { name: 'site-admin', type: 'boolean', summary: 'Admin role everywhere, plus users, runners, and settings' },
-      { name: 'token-scope', type: 'string[]', value: '<glob>', summary: 'Restrict this token alone to these globs' },
-      ...REMOVED_SCOPE_OPTIONS,
-      VAULT_OPTION,
-      JSON_OPTION,
-      ...TARGET_OPTIONS,
-    ],
-    run: userAddCmd,
-  },
-  {
-    path: ['user', 'grant'],
-    summary: 'Grant or withdraw the site-admin bit',
-    description: `Per-repository access is granted on the repository ('mochi collab add') and
-per-collection access on the collection ('mochi collection owner add');
-this command carries only the one bit that is the vault's own.`,
-    args: [{ name: 'username', required: true }],
-    options: [
-      { name: 'site-admin', type: 'boolean', summary: 'Make this user a site admin' },
-      { name: 'revoke-site-admin', type: 'boolean', summary: 'Withdraw the site-admin bit' },
-      ...REMOVED_SCOPE_OPTIONS,
-      VAULT_OPTION,
-      JSON_OPTION,
-      ...TARGET_OPTIONS,
-    ],
-    run: userGrantCmd,
-  },
-  {
-    path: ['user', 'list'],
-    summary: 'Show users, who is a site admin, and how many tokens each has',
-    options: [VAULT_OPTION, JSON_OPTION, ...TARGET_OPTIONS],
-    run: userListCmd,
-  },
-  {
-    path: ['whoami'],
-    summary: 'Show the user, their standing, and the token restriction for the current token',
-    options: [JSON_OPTION, ...TARGET_OPTIONS],
-    run: whoamiCmd,
-  },
+  ...userCommands(),
   {
     path: ['login'],
     summary: 'Log in to a vault and hand the token to git',

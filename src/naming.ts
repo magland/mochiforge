@@ -10,6 +10,9 @@
 
 import type { BuildInfo } from './version';
 
+/** The sections of a vault's administration; see src/adminweb.ts and forms.adminShell. */
+export type AdminSection = 'users' | 'runners' | 'github' | 'egress' | 'appearance' | 'settings';
+
 export interface Naming {
   /** The command and product name, as used in messages: "mochi login ...". */
   product: string;
@@ -35,6 +38,8 @@ export interface Naming {
   accessFile: string;
   /** What the jump box finds, in the singular: "repository". */
   itemNoun: string;
+  /** The same, plural: "repositories". */
+  itemNounPlural: string;
   /**
    * The jump box's heading over what it finds, when not mochi's
    * "Repositories". Carried to the page script by an attribute on <html>,
@@ -47,6 +52,11 @@ export interface Naming {
    * the sibling's own trusted markup, never anything a user wrote.
    */
   pageHead?: string;
+  /**
+   * The administration sections this product has, for the admin menu and
+   * the routes behind it; unset means all of mochi's.
+   */
+  adminSections?: AdminSection[];
   /** The logotype in the top bar, as SVG; unset means mochi's own (src/logo.ts). */
   wordmark?: string;
   /** The mark on the sign-in pages, as SVG; unset means mochi's own. */
@@ -71,8 +81,13 @@ export const naming: Naming = {
   displayName: 'Mochi Forge',
   accessFile: 'mochi.json',
   itemNoun: 'repository',
+  itemNounPlural: 'repositories',
 };
 
 export function setNaming(overrides: Partial<Naming>): void {
   Object.assign(naming, overrides);
+}
+
+export function adminSectionEnabled(section: AdminSection): boolean {
+  return !naming.adminSections || naming.adminSections.includes(section);
 }

@@ -1,8 +1,9 @@
 import { api } from '../cli-api';
 import { CliError, EXIT_USAGE } from './exit';
-import { JSON_OPTION, jsonMode, pickFields, pickObject, printJson, printTable, shortDate } from './output';
+import { JSON_OPTION, jsonMode, pickObject, printJson, printTable } from './output';
 import { Command, OptionSpec } from './parse';
 import { TARGET_OPTIONS, targetFrom } from './target';
+import { userAdminCommands } from './user-cmd';
 
 // The rest of administration: reading and removing users, listing and revoking
 // their tokens, removing an empty collection, and the vault's own settings.
@@ -14,111 +15,7 @@ const YES_OPTION: OptionSpec = {
 };
 
 export const adminCommands: Command[] = [
-  {
-    path: ['user', 'view'],
-    summary: "Show one user's standing and the tokens they hold",
-    description: `Never a token, and never a token's hash: only a SHA-256 hash is stored, so there
-is nothing to show even if it were a good idea. What comes back is the id
-revocation takes, when the token was minted, and any scope of its own.`,
-    args: [{ name: 'username', required: true }],
-    options: [JSON_OPTION, ...TARGET_OPTIONS],
-    async run(inv) {
-      const target = await targetFrom(inv);
-      const data = await api(target, 'GET', `/api/users/${encodeURIComponent(inv.args[0])}`);
-      const tokens = (data.tokens ?? []) as Record<string, unknown>[];
-      const json = jsonMode(inv);
-      if (json.enabled) {
-        printJson(pickObject(data, json.fields));
-        return;
-      }
-      console.log(`${data.name} @ ${target.host}`);
-      console.log(`  ${data.siteAdmin ? 'site admin' : `owns collection '${data.name}' by name`}`);
-      console.log('');
-      if (tokens.length === 0) {
-        console.log('No tokens, so this user cannot sign in or push.');
-        return;
-      }
-      printTable(
-        tokens.map((t) => [
-          String(t.id),
-          shortDate(t.created as string) || '(unknown date)',
-          t.scope ? `restricted to: ${(t.scope as string[]).join(', ')}` : '',
-        ])
-      );
-    },
-  },
-  {
-    path: ['user', 'delete'],
-    summary: 'Remove a user and every token they hold',
-    args: [{ name: 'username', required: true }],
-    options: [YES_OPTION, JSON_OPTION, ...TARGET_OPTIONS],
-    async run(inv) {
-      if (!inv.bool('yes')) throw new CliError('Removing a user cannot be undone. Pass --yes.', EXIT_USAGE);
-      const name = inv.args[0];
-      const target = await targetFrom(inv);
-      const data = await api(target, 'DELETE', `/api/users/${encodeURIComponent(name)}?confirm=${encodeURIComponent(name)}`);
-      const json = jsonMode(inv);
-      if (json.enabled) {
-        printJson(pickObject(data, json.fields));
-        return;
-      }
-      console.log(`Removed ${data.deleted}`);
-    },
-  },
-  {
-    path: ['user', 'token', 'list'],
-    summary: "List a user's tokens, by the id revocation takes",
-    args: [{ name: 'username', required: true }],
-    options: [JSON_OPTION, ...TARGET_OPTIONS],
-    async run(inv) {
-      const target = await targetFrom(inv);
-      const data = await api(target, 'GET', `/api/users/${encodeURIComponent(inv.args[0])}/tokens`);
-      const tokens = (data.tokens ?? []) as Record<string, unknown>[];
-      const json = jsonMode(inv);
-      if (json.enabled) {
-        printJson({ tokens: pickFields(tokens, json.fields) });
-        return;
-      }
-      if (tokens.length === 0) {
-        console.log('No tokens');
-        return;
-      }
-      printTable(
-        tokens.map((t) => [
-          String(t.id),
-          shortDate(t.created as string) || '(unknown date)',
-          t.scope ? `restricted to: ${(t.scope as string[]).join(', ')}` : '',
-        ])
-      );
-    },
-  },
-  {
-    path: ['user', 'token', 'revoke'],
-    summary: 'Revoke one token, leaving the user and their other tokens',
-    description: `Revoking the token you are using is allowed and is reported rather than refused:
-locking yourself out is your business, and vault.json remains hand-editable.`,
-    args: [
-      { name: 'username', required: true },
-      { name: 'token-id', required: true },
-    ],
-    options: [YES_OPTION, JSON_OPTION, ...TARGET_OPTIONS],
-    async run(inv) {
-      if (!inv.bool('yes')) throw new CliError('Revoking a token cannot be undone. Pass --yes.', EXIT_USAGE);
-      const target = await targetFrom(inv);
-      const data = await api(
-        target,
-        'DELETE',
-        `/api/users/${encodeURIComponent(inv.args[0])}/tokens/${encodeURIComponent(inv.args[1])}`
-      );
-      const json = jsonMode(inv);
-      if (json.enabled) {
-        printJson(pickObject(data, json.fields));
-        return;
-      }
-      console.log(`Revoked ${data.revoked}; ${data.remaining} token${data.remaining === 1 ? '' : 's'} left.`);
-      if (data.wasThisToken) console.log('That was the token this command authenticated with, so it will not work again.');
-    },
-  },
+  ...userAdminCommands(),
   {
     path: ['collection', 'rename'],
     summary: 'Rename a collection, with every repository in it',
