@@ -9,7 +9,7 @@ import { OpError, createRepo, opErrorStatus } from './ops';
 import { atLeast, canCreateRepo, canReadRepo, repoIsPrivate, repoRole } from './perms';
 import { displayName, findRepo, isDotName, isValidName, reservedRepoSuffix } from './scan';
 import { publishSiteAfterPush } from './sitepublish';
-import { AuthLimiter, BUSY_RETRY_SECONDS, Gates } from './limit';
+import { AuthLimiter, BUSY_RETRY_SECONDS, Gate, Gates } from './limit';
 import { AuthResult, authenticate, authenticateToken, loadVault } from './vault';
 import { ah } from './web';
 
@@ -55,7 +55,7 @@ export function parseBasicAuth(req: Request): { username: string; password: stri
 // The authorization decisions, shared with the LFS endpoints. The caller
 // renders a denial in its own content type (plain text for git, LFS JSON for
 // the batch API), so these return a result rather than writing the response.
-type Denied = { ok: false; status: 401 | 403 | 404 | 429 | 500; message: string; retryAfter?: number };
+export type Denied = { ok: false; status: 401 | 403 | 404 | 429 | 500; message: string; retryAfter?: number };
 /** Read grants may be anonymous (a public repository) or a job token, so auth may be null. */
 export type GitAuthCheck = { ok: true; auth: AuthResult | null } | Denied;
 /** A push is always somebody's. */
@@ -77,7 +77,7 @@ function vaultOf(root: string, verb: string): { vault: import('./vault').Vault }
   return { vault: state.vault };
 }
 
-function checkCreds(
+export function checkCreds(
   root: string,
   limiter: AuthLimiter,
   req: Request,
@@ -211,15 +211,103 @@ async function refSnapshot(repo: GitRepo): Promise<Map<string, string>> {
 
 const ZERO = '0'.repeat(40);
 
-export function registerGitHttp(app: Express, root: string, gates: Gates, authLimiter: AuthLimiter, engine?: CiEngine): void {
-  // git shows the body of a 503 on the RPC to the person who ran the command, so
-  // it is one sentence. Not 429: this is server capacity rather than a client
-  // quota, and git's own error surface reads better with 503.
-  function denyBusy(res: Response) {
-    res.status(503).setHeader('Retry-After', String(BUSY_RETRY_SECONDS));
-    res.type('text/plain').send('the server is busy with other git work; please try again in a moment\n');
-  }
+// Advertising refs and running an RPC, for any bare repository directory:
+// what the routes below do once they have authorized the request, and what a
+// sibling application serving clones of its own repositories (see
+// src/naming.ts) does after its own authorization.
 
+// git shows the body of a 503 on the RPC to the person who ran the command, so
+// it is one sentence. Not 429: this is server capacity rather than a client
+// quota, and git's own error surface reads better with 503.
+export function denyBusy(res: Response) {
+  res.status(503).setHeader('Retry-After', String(BUSY_RETRY_SECONDS));
+  res.type('text/plain').send('the server is busy with other git work; please try again in a moment\n');
+}
+
+
+// Both of these spawn git, and both hold their gate slot until the child is
+// gone rather than until the handler returns: runService pipes and returns
+// immediately, so releasing on return would bound nothing at all. The gate's
+// release is idempotent, which is what lets it be wired to both the child
+// closing and the response closing; an aborted clone is ordinary traffic, and
+// a gate that leaked a slot per abort would stop answering after four of them.
+export async function advertiseGitService(
+  req: Request,
+  res: Response,
+  service: 'git-upload-pack' | 'git-receive-pack',
+  dir: string,
+  gate: Gate
+): Promise<void> {
+  const release = await gate.enter();
+  if (!release) {
+    denyBusy(res);
+    return;
+  }
+  res.on('close', release);
+  res.setHeader('Content-Type', `application/x-${service}-advertisement`);
+  res.setHeader('Cache-Control', 'no-cache');
+  res.write(pkt(`# service=${service}\n`) + '0000');
+  const child = spawn('git', [service.slice(4), '--stateless-rpc', '--advertise-refs', dir], {
+    env: gitEnv(req),
+  });
+  child.on('close', release);
+  child.stdout.pipe(res);
+  child.on('error', () => {
+    release();
+    res.end();
+  });
+}
+
+export async function runGitService(
+  req: Request,
+  res: Response,
+  service: 'git-upload-pack' | 'git-receive-pack',
+  dir: string,
+  gate: Gate,
+  onClose?: (code: number | null) => void
+): Promise<void> {
+  const release = await gate.enter();
+  if (!release) {
+    denyBusy(res);
+    return;
+  }
+  res.on('close', release);
+  res.setHeader('Content-Type', `application/x-${service}-result`);
+  res.setHeader('Cache-Control', 'no-cache');
+  const child = spawn('git', [service.slice(4), '--stateless-rpc', dir], { env: gitEnv(req) });
+  // The request body reaches git through a pipeline rather than a chain of
+  // pipe() calls, because pipe() leaves an error on the destination with no
+  // listener, and an 'error' nobody listens for ends the process. A body
+  // declared gzip that is not gzip is the case that reaches here from the
+  // network: it is a bad request, and what should die is the request.
+  // Likewise git exiting early, which turns its stdin into an EPIPE for the
+  // writer: the exit code is the answer, and the pipe error is noise.
+  const stages: NodeJS.ReadableStream[] = [req];
+  if (req.headers['content-encoding'] === 'gzip') stages.push(zlib.createGunzip());
+  stream.pipeline([...stages, child.stdin] as unknown as NodeJS.ReadWriteStream[], (err) => {
+    if (err) child.kill();
+  });
+  child.stdout.pipe(res);
+  // A client that goes away mid-transfer leaves git writing into a pipe
+  // nobody drains. Node unpipes and pauses the source, which is a git
+  // process blocked forever, holding its packfile in memory, one per
+  // abandoned clone. A response closed without finishing is that case;
+  // one that finished has a git that is already exiting.
+  res.on('close', () => {
+    if (!res.writableFinished) child.kill();
+  });
+  child.on('error', () => {
+    release();
+    if (!res.headersSent) res.status(500);
+    res.end();
+  });
+  child.on('close', (code) => {
+    release();
+    if (onClose) onClose(code);
+  });
+}
+
+export function registerGitHttp(app: Express, root: string, gates: Gates, authLimiter: AuthLimiter, engine?: CiEngine): void {
   function deny(res: Response, status: number, message: string, retryAfter?: number) {
     if (status === 401) res.setHeader('WWW-Authenticate', 'Basic realm="mochi"');
     if (retryAfter !== undefined) res.setHeader('Retry-After', String(retryAfter));
@@ -271,89 +359,18 @@ export function registerGitHttp(app: Express, root: string, gates: Gates, authLi
     await execGit(repo.dir, ['symbolic-ref', 'HEAD', `refs/heads/${pick}`]);
   }
 
-  // Both of these spawn git, and both hold their gate slot until the child is
-  // gone rather than until the handler returns: runService pipes and returns
-  // immediately, so releasing on return would bound nothing at all. The gate's
-  // release is idempotent, which is what lets it be wired to both the child
-  // closing and the response closing; an aborted clone is ordinary traffic, and
-  // a gate that leaked a slot per abort would stop answering after four of them.
   function gateFor(service: 'git-upload-pack' | 'git-receive-pack') {
     return service === 'git-upload-pack' ? gates.clone : gates.push;
   }
-
-  async function advertise(
-    req: Request,
-    res: Response,
-    service: 'git-upload-pack' | 'git-receive-pack',
-    dir: string
-  ): Promise<void> {
-    const release = await gateFor(service).enter();
-    if (!release) {
-      denyBusy(res);
-      return;
-    }
-    res.on('close', release);
-    res.setHeader('Content-Type', `application/x-${service}-advertisement`);
-    res.setHeader('Cache-Control', 'no-cache');
-    res.write(pkt(`# service=${service}\n`) + '0000');
-    const child = spawn('git', [service.slice(4), '--stateless-rpc', '--advertise-refs', dir], {
-      env: gitEnv(req),
-    });
-    child.on('close', release);
-    child.stdout.pipe(res);
-    child.on('error', () => {
-      release();
-      res.end();
-    });
-  }
-
-  async function runService(
+  const advertise = (req: Request, res: Response, service: 'git-upload-pack' | 'git-receive-pack', dir: string) =>
+    advertiseGitService(req, res, service, dir, gateFor(service));
+  const runService = (
     req: Request,
     res: Response,
     service: 'git-upload-pack' | 'git-receive-pack',
     dir: string,
     onClose?: (code: number | null) => void
-  ): Promise<void> {
-    const release = await gateFor(service).enter();
-    if (!release) {
-      denyBusy(res);
-      return;
-    }
-    res.on('close', release);
-    res.setHeader('Content-Type', `application/x-${service}-result`);
-    res.setHeader('Cache-Control', 'no-cache');
-    const child = spawn('git', [service.slice(4), '--stateless-rpc', dir], { env: gitEnv(req) });
-    // The request body reaches git through a pipeline rather than a chain of
-    // pipe() calls, because pipe() leaves an error on the destination with no
-    // listener, and an 'error' nobody listens for ends the process. A body
-    // declared gzip that is not gzip is the case that reaches here from the
-    // network: it is a bad request, and what should die is the request.
-    // Likewise git exiting early, which turns its stdin into an EPIPE for the
-    // writer: the exit code is the answer, and the pipe error is noise.
-    const stages: NodeJS.ReadableStream[] = [req];
-    if (req.headers['content-encoding'] === 'gzip') stages.push(zlib.createGunzip());
-    stream.pipeline([...stages, child.stdin] as unknown as NodeJS.ReadWriteStream[], (err) => {
-      if (err) child.kill();
-    });
-    child.stdout.pipe(res);
-    // A client that goes away mid-transfer leaves git writing into a pipe
-    // nobody drains. Node unpipes and pauses the source, which is a git
-    // process blocked forever, holding its packfile in memory, one per
-    // abandoned clone. A response closed without finishing is that case;
-    // one that finished has a git that is already exiting.
-    res.on('close', () => {
-      if (!res.writableFinished) child.kill();
-    });
-    child.on('error', () => {
-      release();
-      if (!res.headersSent) res.status(500);
-      res.end();
-    });
-    child.on('close', (code) => {
-      release();
-      if (onClose) onClose(code);
-    });
-  }
+  ) => runGitService(req, res, service, dir, gateFor(service), onClose);
 
   app.get(
     '/:collection/:repo/info/refs',
