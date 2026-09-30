@@ -36,6 +36,11 @@ export interface Naming {
    * not bare repositories keeps the same record under a name of its own.
    */
   accessFile: string;
+  /**
+   * Whether the product's tokens are also git's credentials, which is what
+   * much of the account and admin wording explains. true for mochi.
+   */
+  git: boolean;
   /** What the jump box finds, in the singular: "repository". */
   itemNoun: string;
   /** The same, plural: "repositories". */
@@ -79,6 +84,7 @@ export const naming: Naming = {
   envPrefix: 'MOCHI',
   configDirName: 'mochi',
   displayName: 'Mochi Forge',
+  git: true,
   accessFile: 'mochi.json',
   itemNoun: 'repository',
   itemNounPlural: 'repositories',

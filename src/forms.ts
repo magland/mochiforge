@@ -69,7 +69,7 @@ ${
       : ''
   }
 </div>
-<p class="muted small signin-note">A token is what git uses for pushing. Tokens are minted by an administrator; there are no passwords.
+<p class="muted small signin-note">${naming.git ? 'A token is what git uses for pushing. ' : ''}Tokens are minted by an administrator; there are no passwords.
 Passkeys are added from your account page, once you are signed in.</p>
 <p class="muted small signin-note">Already signed in on another device? <a href="/login/link?next=${encodeURIComponent(
     next
@@ -165,8 +165,8 @@ ${csrfField(viewer)}
 <div class="form-error" data-passkey-error hidden></div>
 <p class="muted small" data-passkey-unsupported hidden>This browser does not offer passkeys here. Passkeys need a browser
 with WebAuthn, over https (or on localhost).</p>
-<p class="muted small">A passkey signs you in to this vault's web pages with your screen lock or security key, instead of
-the token. It is kept by your browser or device; the vault stores only its public half. git keeps using tokens.</p>`;
+<p class="muted small">A passkey signs you in to this ${naming.rootNoun}'s web pages with your screen lock or security key, instead of
+the token. It is kept by your browser or device; the ${naming.rootNoun} stores only its public half.${naming.git ? ' git keeps using tokens.' : ''}</p>`;
   const passkeyBox = html`<div class="form-box">
 <h2>Passkeys</h2>
 ${list}
@@ -187,7 +187,7 @@ ${
                 gh.account.id
               )}</span>${gh.account.linked ? html`, since ${timeTag(gh.account.linked, '')}` : ''}.</p>
 <p class="muted small">&ldquo;Sign in with GitHub&rdquo; on the sign-in page signs in as <b>${name}</b>. Unlinking is
-immediate: a session signed in with GitHub is signed out on its next page load. git keeps using tokens either way.</p>
+immediate: a session signed in with GitHub is signed out on its next page load.${naming.git ? ' git keeps using tokens either way.' : ''}</p>
 <form method="post" action="/account/github/unlink" class="inline-form">
 ${csrfField(viewer)}
 <button type="submit" class="btn btn-danger-outline">Unlink</button>
@@ -201,7 +201,7 @@ ${csrfField(viewer)}
 </form>
 <p class="muted small">Linking sends you to GitHub to authorize once; nothing of GitHub's is stored here beyond the
 account's id and name. Afterwards &ldquo;Sign in with GitHub&rdquo; on the sign-in page signs you in as <b>${name}</b>.
-git keeps using tokens.</p>`
+${naming.git ? 'git keeps using tokens.' : ''}</p>`
         }
 </div>`;
   const handoff = html`<div class="form-box">
@@ -227,7 +227,7 @@ ${handoff}`;
 export function accountLinkPage(viewer: Viewer, code: string, minutes: number): string {
   const content = html`<div class="form-box">
 <h1>Sign in on another device</h1>
-<p>On the other device, open this vault's sign-in page, choose <b>Enter a code from a signed-in device</b>, and type:</p>
+<p>On the other device, open this ${naming.rootNoun}'s sign-in page, choose <b>Enter a code from a signed-in device</b>, and type:</p>
 <div class="handoff-code mono">${code}</div>
 <p class="muted small">The code signs that device in as <b>${viewer.auth.username}</b>. It works once and expires in
 ${minutes} minutes; showing it again mints a fresh one. The new session is tied to the same credential as this one, so
@@ -1054,9 +1054,13 @@ ${csrfField(viewer)}
 <span class="mono">https://</span>.</p></div>
 <button type="submit" class="btn btn-primary">${icon('check')}<span>Save profile</span></button>
 </form>
-<hr class="rule">
+${
+    naming.git
+      ? html`<hr class="rule">
 <p class="muted small">For a longer introduction, your profile page also renders
-<span class="mono">${name}/.mochi/profile/README.md</span>, edited like any other file in a repository.</p>
+<span class="mono">${name}/.mochi/profile/README.md</span>, edited like any other file in a repository.</p>`
+      : ''
+  }
 </div>`;
   return layout('Your profile', content, { viewer, path: '/settings/profile' });
 }
@@ -1098,10 +1102,10 @@ ${errorBanner(error)}
 <form method="post" action="/admin/users">
 ${csrfField(viewer)}
 <div class="field"><label for="username">Username</label><input type="text" id="username" name="username" required>
-<p class="muted small">A user owns the collection named after them: they create repositories there, administer them, and
-may grant others access. Everything else is granted per repository (collaborators) or per collection (owners).</p></div>
+<p class="muted small">A user owns the collection named after them: they create ${naming.itemNounPlural} there, administer them, and
+may grant others access. Everything else is granted per ${naming.itemNoun} (collaborators) or per collection (owners).</p></div>
 <div class="field"><label><input type="checkbox" name="siteAdmin" value="true"> Site admin</label>
-<p class="muted small">Site admins hold the admin role everywhere and manage users, runners, and the vault's settings.</p></div>
+<p class="muted small">Site admins hold the admin role everywhere and manage users${adminSectionEnabled('runners') ? ', runners,' : ''} and the ${naming.rootNoun}'s settings.</p></div>
 <button type="submit" class="btn btn-primary">Create user and mint token</button>
 </form>
 <p class="muted small">The new token is shown once on the next page.</p>
@@ -1147,9 +1151,9 @@ ${csrfField(viewer)}
     user.tokens.length > 0
       ? html`<table class="listing"><tbody><tr><th>Token</th><th>Minted</th><th>Scope</th><th class="right"></th></tr>${tokenRows}</tbody></table>
 <p class="muted small">Only a SHA-256 hash of each token is stored, so there is nothing to show beyond its id. Revocation
-is immediate: the next push and the next page load are both refused. Revoking the token this session was signed in with
+is immediate: ${naming.git ? 'the next push and the next page load are both refused' : 'the next request is refused'}. Revoking the token this session was signed in with
 signs you out.</p>`
-      : html`<div class="empty-state">No tokens. This user cannot push or sign in until one is minted.</div>`;
+      : html`<div class="empty-state">No tokens. This user cannot ${naming.git ? 'push or sign in' : 'sign in'} until one is minted.</div>`;
   const mint = html`<div class="form-box">
 <h2>Mint a token</h2>
 <form method="post" action="${base}/token">
@@ -1171,9 +1175,9 @@ ${csrfField(viewer)}
 <input type="hidden" name="siteAdmin" value="${user.siteAdmin ? 'false' : 'true'}">
 <p>${
     user.siteAdmin
-      ? html`<b>${name}</b> is a site admin: the admin role everywhere, plus users, runners, and the vault's settings.`
+      ? html`<b>${name}</b> is a site admin: the admin role everywhere, plus users${adminSectionEnabled('runners') ? ', runners,' : ''} and the ${naming.rootNoun}'s settings.`
       : html`<b>${name}</b> owns the collection <span class="mono">${name}</span> by name; anything more is granted per
-repository (collaborators), per collection (owners), or with the site-admin bit here.`
+${naming.itemNoun} (collaborators), per collection (owners), or with the site-admin bit here.`
   }</p>
 <button type="submit" class="btn">${user.siteAdmin ? 'Withdraw site admin' : 'Make site admin'}</button>
 </form>
@@ -1216,7 +1220,9 @@ GitHub sign-in entirely, also remove them from the approved list under <a href="
 fresh account would be created for them on their next sign-in.</p>
 </div>`
     : '';
-  const identity = html`<div class="form-box">
+  const identity = !naming.git
+    ? ''
+    : html`<div class="form-box">
 <h2>Identity</h2>
 <form method="post" action="${base}/emails">
 ${csrfField(viewer)}
@@ -1229,11 +1235,12 @@ empty list clears it.</p></div>
 </form>
 </div>`;
   const danger = self
-    ? html`<p class="muted small">A user cannot delete themselves; another administrator can, or edit <span class="mono">vault.json</span> by hand.</p>`
+    ? html`<p class="muted small">A user cannot delete themselves; another administrator can, or edit <span class="mono">${naming.stateFile}</span> by hand.</p>`
     : html`<div class="danger-zone">
 <h3>Danger zone</h3>
-<p>Deleting a user revokes every token they hold, immediately. Nothing they pushed is touched: commits, issues, and
-comments keep their name.</p>
+<p>Deleting a user revokes every token they hold, immediately. ${
+        naming.git ? 'Nothing they pushed is touched: commits, issues, and comments keep their name.' : 'Nothing they wrote is touched.'
+      }</p>
 <form method="post" action="${base}/delete">
 ${csrfField(viewer)}
 <div class="field"><label for="confirm">Type <b class="mono">${name}</b> to confirm</label><input type="text" id="confirm" name="confirm" autocomplete="off"></div>
@@ -1482,7 +1489,7 @@ ${swatch}
   });
   const content = html`<div class="page-head"><h1>Appearance</h1></div>
 ${flashBanner(msg)}
-<p class="muted">The theme applies to the whole vault, for every visitor. It is stored in <span class="mono">config.json</span> next to <span class="mono">vault.json</span>, so it can also be set by hand.</p>
+<p class="muted">The theme applies to the whole ${naming.rootNoun}, for every visitor. It is stored in <span class="mono">config.json</span> next to <span class="mono">${naming.stateFile}</span>, so it can also be set by hand.</p>
 <form method="post" action="/admin/appearance">
 ${csrfField(viewer)}
 <div class="theme-grid">${cards}</div>
@@ -1800,7 +1807,7 @@ ${csrfField(viewer)}
     : html`<p class="muted">Nobody is approved yet.</p>`;
   const approve = html`<div class="form-box">
 <h2>Approved GitHub accounts</h2>
-<p class="muted small">An approved GitHub account may sign in here; its first sign-in creates a vault account named
+<p class="muted small">An approved GitHub account may sign in here; its first sign-in creates a ${naming.rootNoun} account named
 after the GitHub login, holding no tokens until one is minted for it. Approval is recorded by GitHub's stable numeric
 id, resolved from the username as it is added, so a later rename on GitHub transfers nothing. Removing an approval
 stops new accounts being created; a GitHub account already linked to a user keeps signing in until it is unlinked on
@@ -1838,7 +1845,11 @@ export function tokenPage(viewer: Viewer, username: string, token: string, creat
 <h1>${heading}</h1>
 <p>Copy the token now; only its SHA-256 hash is stored, so it cannot be shown again.</p>
 <div class="cmd-row"><code>${token}</code>${copyButton()}</div>
-<p class="muted small">Use it as the password with username <b>${username}</b> when git asks for credentials, or to sign in here.</p>
+<p class="muted small">${
+    naming.git
+      ? html`Use it as the password with username <b>${username}</b> when git asks for credentials, or to sign in here.`
+      : html`Use it with username <b>${username}</b> to sign in here, or with <span class="mono">${naming.product} login</span>.`
+  }</p>
 <p><a class="btn" href="/admin/users">Back to users</a></p>
 </div>`;
   return layout(heading, content, { viewer, path: '/admin/users' });
