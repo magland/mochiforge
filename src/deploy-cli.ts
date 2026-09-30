@@ -422,6 +422,8 @@ export interface DeployProfile {
   contents: string;
   /** Printed after the owner token once a fresh deploy answers: how to begin. */
   firstSteps(url: string, username: string): string[];
+  /** The memory a new app's machine gets when --vm-memory does not say; unset means 512mb. */
+  defaultMemory?: string;
 }
 
 export const MOCHI_DEPLOY: DeployProfile = {
@@ -479,8 +481,10 @@ async function liveSettings(app: string, profile: DeployProfile): Promise<Partia
   return out;
 }
 
-function resolveSettings(a: DeployArgs, live: Partial<Settings>): Settings {
-  const base: Settings = { ...DEFAULTS, ...live };
+function resolveSettings(a: DeployArgs, live: Partial<Settings>, profile?: DeployProfile): Settings {
+  // A new app starts from the profile's memory when it names one; a live app
+  // keeps whatever it has.
+  const base: Settings = { ...DEFAULTS, ...(profile?.defaultMemory ? { memory: normalizeMemory(profile.defaultMemory) } : {}), ...live };
   const vm = a.vmSize ? parseVmSize(a.vmSize) : null;
   return {
     region: a.region ?? base.region,
@@ -625,7 +629,7 @@ export async function deployFlyCmd(
 
   const existed = await appExists(app);
   const live = existed ? await liveSettings(app, profile) : {};
-  const settings = resolveSettings(a, live);
+  const settings = resolveSettings(a, live, profile);
 
   // A volume cannot move, so a region flag that disagrees with the volume that
   // exists is a request this cannot carry out. Saying so beats deploying a
