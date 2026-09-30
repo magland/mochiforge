@@ -5,6 +5,7 @@ import { collectionOwners, isSiteAdmin, removeUserGrants, tokenIsScoped } from '
 import { isValidName, isValidUserName, listCollections } from '../scan';
 import { AuthResult, addUserToken, loadVault, removeUser, revokeToken, setSiteAdmin, tokenId } from '../vault';
 import { apiError, requireApiAuth as authenticateRequest } from './auth';
+import { inviteLink, naming } from '../naming';
 
 // The JSON API's routes about people rather than repositories: who the caller
 // is, a one-time sign-in link for the browser, the users, the site-admin bit,
@@ -140,6 +141,7 @@ export function registerUsersApi(app: Express, root: string, authLimiter: AuthLi
       created: result.created,
       token: result.token,
       siteAdmin: result.user.siteAdmin === true,
+      ...(naming.invites ? { invite: inviteLink(`${req.protocol}://${req.get('host')}`, username, result.token) } : {}),
     });
   });
 

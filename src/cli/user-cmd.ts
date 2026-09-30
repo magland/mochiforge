@@ -94,6 +94,11 @@ async function userAddCmd(inv: Invocation) {
   console.log(`  ${formatStanding(data as { username: string; siteAdmin?: boolean })}`);
   if (tokenScope.length) console.log(`  this token is restricted to: ${tokenScope.join(', ')}`);
   console.log('');
+  if (data.invite) {
+    console.log('Invite link, which signs them in with one press of a button (send it privately):');
+    console.log(`  ${data.invite}`);
+    console.log('');
+  }
   console.log('Token (copy it now; only its hash is stored):');
   console.log(`  ${data.token}`);
   console.log('');

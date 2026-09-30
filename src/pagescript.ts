@@ -490,6 +490,34 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 });
 
+// ---- invite links ----
+// An invite link is /invite#user=<name>&token=<token>, for a product that
+// gives them. The fragment never reaches the server; this moves it into the
+// sign-in form and then out of the address bar and the history, so the token
+// is not left where the next person at the machine could read it. Nothing is
+// submitted: the person presses the button.
+document.addEventListener('DOMContentLoaded', function () {
+  var box = document.querySelector('[data-invite]');
+  if (!box) return;
+  var hash = location.hash || '';
+  var t = /(?:^#|&)token=([^&]+)/.exec(hash);
+  var u = /(?:^#|&)user=([^&]+)/.exec(hash);
+  if (history.replaceState) history.replaceState(null, '', location.pathname + location.search);
+  var dec = function (v) { try { return decodeURIComponent(v); } catch (e) { return v; } };
+  var token = box.querySelector('#token');
+  var user = box.querySelector('#username');
+  if (t && token) {
+    token.value = dec(t[1]);
+    if (u && user) user.value = dec(u[1]);
+    box.querySelector('[data-invite-ready]').hidden = false;
+    var button = box.querySelector('button[type="submit"]');
+    if (button) button.focus();
+  } else {
+    box.querySelector('[data-invite-missing]').hidden = false;
+    if (user) user.focus();
+  }
+});
+
 // ---- wiring ----
 //
 // The markup carries data attributes rather than inline handlers, and the

@@ -5,7 +5,7 @@ import { IconName, icon } from './icons';
 import { isMarkdownFile } from './markdown';
 import { markdownEditor, previewUrl } from './mdedit';
 import { MARK } from './logo';
-import { adminSectionEnabled, naming } from './naming';
+import { adminSectionEnabled, inviteLink, naming } from './naming';
 import { formatSize, timeTag } from './render';
 import { Viewer } from './session';
 import { Theme } from './themes';
@@ -1839,11 +1839,21 @@ ${linked}`;
   return adminShell(viewer, 'github', 'GitHub sign-in', '/admin/github', content);
 }
 
-export function tokenPage(viewer: Viewer, username: string, token: string, created: boolean): string {
+export function tokenPage(viewer: Viewer, username: string, token: string, created: boolean, origin?: string): string {
   const heading = created ? `Created user ${username}` : `New token for ${username}`;
+  // Where the product gives invite links, the link comes first: it is what
+  // gets sent, and the token alone is for the CLI.
+  const invite =
+    naming.invites && origin
+      ? html`<p>Send ${username} the invite link, which signs them in with one press of a button:</p>
+<div class="cmd-row"><code>${inviteLink(origin, username, token)}</code>${copyButton()}</div>
+<p class="muted small">The link carries the token itself, so anyone holding it can sign in as ${username} until the token is revoked: send it privately, the way you would send a password.</p>
+<p>Or hand over the token alone:</p>`
+      : '';
   const content = html`<div class="form-box">
 <h1>${heading}</h1>
-<p>Copy the token now; only its SHA-256 hash is stored, so it cannot be shown again.</p>
+<p>Copy the ${invite ? 'link or the token' : 'token'} now; only its SHA-256 hash is stored, so it cannot be shown again.</p>
+${invite}
 <div class="cmd-row"><code>${token}</code>${copyButton()}</div>
 <p class="muted small">${
     naming.git
@@ -1853,6 +1863,33 @@ export function tokenPage(viewer: Viewer, username: string, token: string, creat
 <p><a class="btn" href="/admin/users">Back to users</a></p>
 </div>`;
   return layout(heading, content, { viewer, path: '/admin/users' });
+}
+
+/**
+ * What an invite link opens. It is its own page rather than /login, because
+ * /login sends a signed-in visitor straight on, and a redirect would carry the
+ * fragment, token and all, into the address bar of wherever it landed. The
+ * page script fills the form from the fragment and the person presses one
+ * button; nothing signs anyone in without that press, so a link cannot
+ * quietly swap a visitor into someone else's account.
+ */
+export function invitePage(signedInAs: string | null): string {
+  const content = html`<div class="signin" data-invite>
+<div class="signin-mark">${raw(naming.mark ?? MARK)}</div>
+<h1>You're invited</h1>
+${signedInAs ? html`<div class="flash">This browser is signed in as <b>${signedInAs}</b>. Accepting the invite switches it to the invited account.</div>` : ''}
+<div class="form-box">
+<p data-invite-ready hidden>Your invite link filled in your username and token. Press the button to join this ${naming.rootNoun}.</p>
+<div class="form-error" data-invite-missing hidden>This invite link has no token in it. It may have been cut short when it was copied; ask for it again, or enter your username and token below.</div>
+<form method="post" action="/login">
+<input type="hidden" name="next" value="/">
+<div class="field"><label for="username">Username</label><input type="text" id="username" name="username" autocomplete="username" required></div>
+<div class="field"><label for="token">Token</label><input type="password" id="token" name="token" autocomplete="current-password" required></div>
+<button type="submit" class="btn btn-primary">Join the ${naming.rootNoun}</button>
+</form>
+</div>
+</div>`;
+  return layout('Invite', content, { path: '/invite' });
 }
 
 export function opErrorPage(message: string, opts: PageOpts & { backUrl?: string } = {}): string {

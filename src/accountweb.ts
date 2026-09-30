@@ -93,6 +93,17 @@ export function registerAccountWeb(app: Express, root: string, authLimiter: Auth
     return true;
   }
 
+  // Where an invite link lands, for a product that gives them (naming.invites).
+  // Open to anyone, like /login: the token that makes it useful is in the
+  // fragment, which the server never sees, and the form it fills posts to
+  // /login like any other sign-in.
+  if (naming.invites) {
+    app.get('/invite', (req, res) => {
+      const viewer = getViewer(req, root);
+      res.set('Cache-Control', 'no-store').type('html').send(forms.invitePage(viewer ? viewer.auth.username : null));
+    });
+  }
+
   app.post('/login', form, (req, res) => {
     if (refuseCrossSite(req, res)) return;
     const next = safeNext(field(req, 'next'));

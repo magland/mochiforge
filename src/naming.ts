@@ -41,6 +41,13 @@ export interface Naming {
    * much of the account and admin wording explains. true for mochi.
    */
   git: boolean;
+  /**
+   * Whether minting a token also gives an invite link, /invite with the
+   * username and token in the fragment, which signs the person in with one
+   * press of a button: on the admin's token page, in the users API's answer,
+   * and from the CLI's user add. dango's arrangement; off for mochi.
+   */
+  invites?: boolean;
   /** What the jump box finds, in the singular: "repository". */
   itemNoun: string;
   /** The same, plural: "repositories". */
@@ -96,4 +103,14 @@ export function setNaming(overrides: Partial<Naming>): void {
 
 export function adminSectionEnabled(section: AdminSection): boolean {
   return !naming.adminSections || naming.adminSections.includes(section);
+}
+
+/**
+ * Where an invite link points: /invite with the username and token in the
+ * fragment. A fragment is never sent to a server, so the token stays out of
+ * access logs, proxies, and Referer headers; the page script moves it into the
+ * sign-in form and clears it from the address bar.
+ */
+export function inviteLink(origin: string, username: string, token: string): string {
+  return `${origin}/invite#user=${encodeURIComponent(username)}&token=${encodeURIComponent(token)}`;
 }

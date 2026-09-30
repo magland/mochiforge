@@ -351,7 +351,7 @@ export function registerAdminWeb(app: Express, root: string, opts: AdminWebOptio
       return;
     }
     const result = addUserToken(root, username, { siteAdmin: field(req, 'siteAdmin') === 'true', by: viewer.auth.username });
-    res.type('html').send(forms.tokenPage(viewer, username, result.token, true));
+    res.type('html').send(forms.tokenPage(viewer, username, result.token, true, `${req.protocol}://${req.get('host')}`));
   });
 
   /**
@@ -532,6 +532,6 @@ export function registerAdminWeb(app: Express, root: string, opts: AdminWebOptio
       tokenScope: tokenScope.length ? tokenScope : undefined,
       by: viewer.auth.username,
     });
-    res.type('html').send(forms.tokenPage(viewer, username, result.token, false));
+    res.type('html').send(forms.tokenPage(viewer, username, result.token, false, `${req.protocol}://${req.get('host')}`));
   });
 }
