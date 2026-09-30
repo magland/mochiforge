@@ -75,6 +75,12 @@ No database, no state outside the directory. Backup is `cp -a`, migration is `rs
 - [The JSON API](docs/api.md) - every route, body, and response
 - [Mochi Forge for an agent](docs/agents.md) - short enough to paste into a context window
 
+## Posts
+
+- [Spin up your own git forge with Mochi](https://jeremy.magland.org/posts/2026-09-26-spin-up-your-own-git-forge-with-mochi/) - video walkthrough of a local vault
+- [Deploy a Mochi vault to the cloud](https://jeremy.magland.org/posts/2026-09-28-deploy-mochi-vault-to-cloud/) - video on deploying to Fly.io and backing up
+- [Embracing the non-scalability](https://jeremy.magland.org/posts/2026-09-30-embracing-the-non-scalability/) - why a vault is one directory and one process
+
 ## Using a vault from Claude Code
 
 [mochiforge-skill](https://github.com/magland/mochiforge-skill) teaches an agent this CLI the way it already knows `gh`.
