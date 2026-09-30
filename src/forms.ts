@@ -5,6 +5,7 @@ import { IconName, icon } from './icons';
 import { isMarkdownFile } from './markdown';
 import { markdownEditor, previewUrl } from './mdedit';
 import { MARK } from './logo';
+import { naming } from './naming';
 import { formatSize, timeTag } from './render';
 import { Viewer } from './session';
 import { Theme } from './themes';
@@ -46,8 +47,8 @@ export function loginPage(next: string, error?: string, github = false): string 
   // it sees the form it can use and nothing it cannot; the GitHub button is
   // decided by the server, since whether it can work is the vault's own state.
   const content = html`<div class="signin">
-<div class="signin-mark">${raw(MARK)}</div>
-<h1>Sign in to Mochi Forge</h1>
+<div class="signin-mark">${raw(naming.mark ?? MARK)}</div>
+<h1>Sign in to ${naming.displayName}</h1>
 ${errorBanner(error)}
 <div class="form-box">
 <form method="post" action="/login">
@@ -80,7 +81,7 @@ Passkeys are added from your account page, once you are signed in.</p>
 /** The page a handoff code is typed into: the other half of accountLinkPage. */
 export function loginLinkPage(next: string, error?: string): string {
   const content = html`<div class="signin">
-<div class="signin-mark">${raw(MARK)}</div>
+<div class="signin-mark">${raw(naming.mark ?? MARK)}</div>
 <h1>Sign in with a code</h1>
 ${errorBanner(error)}
 <div class="form-box">
@@ -104,8 +105,8 @@ ${errorBanner(error)}
  */
 export function loginLinkConfirmPage(username: string, code: string, next: string): string {
   const content = html`<div class="signin">
-<div class="signin-mark">${raw(MARK)}</div>
-<h1>Sign in to Mochi Forge</h1>
+<div class="signin-mark">${raw(naming.mark ?? MARK)}</div>
+<h1>Sign in to ${naming.displayName}</h1>
 <div class="form-box">
 <p>This link signs this browser in as <b>${username}</b>.</p>
 <form method="post" action="/login/code">

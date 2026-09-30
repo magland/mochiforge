@@ -239,7 +239,7 @@ function jumpItems() {
     }
     // A repository is what the box is mostly for, so its matches sort above a
     // section of equal quality rather than below.
-    if (sc >= 0) out.push({ score: sc - 1, group: 'Repositories', label: short, note: note, href: '/' + name.split('/').map(encodeURIComponent).join('/') });
+    if (sc >= 0) out.push({ score: sc - 1, group: document.documentElement.getAttribute('data-jump-group') || 'Repositories', label: short, note: note, href: '/' + name.split('/').map(encodeURIComponent).join('/') });
   }
   out.sort(function (a, b) { return a.score - b.score || a.label.localeCompare(b.label); });
   out = out.slice(0, 15);

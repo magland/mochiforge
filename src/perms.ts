@@ -3,6 +3,7 @@ import * as path from 'path';
 import { withFileLock, writeFileAtomic } from './atomic';
 import { fileCache } from './filecache';
 import { collectionDir, repoPath } from './layout';
+import { naming } from './naming';
 import { listCollections, listRepoDirs } from './scan';
 import { AuthResult, globMatch } from './vault';
 
@@ -67,6 +68,7 @@ export interface RepoAccess {
   collaborators: Record<string, Role>;
 }
 
+/** mochi's name for the file; naming.accessFile is the one read, which is this unless a sibling renamed it. */
 export const REPO_ACCESS_FILE = 'mochi.json';
 
 function normalizeRepoAccess(parsed: unknown): RepoAccess {
@@ -98,7 +100,7 @@ const accessCache = fileCache<RepoAccess>({
 
 /** The access state of the repository whose bare directory this is. */
 export function repoAccess(repoDir: string): RepoAccess {
-  return accessCache.get(path.join(repoDir, REPO_ACCESS_FILE));
+  return accessCache.get(path.join(repoDir, naming.accessFile));
 }
 
 export function repoIsPrivate(repoDir: string): boolean {
@@ -112,7 +114,7 @@ export function repoIsPrivate(repoDir: string): boolean {
  * invisible to it.
  */
 function editRepoAccess(repoDir: string, fn: (access: RepoAccess) => void): RepoAccess {
-  const file = path.join(repoDir, REPO_ACCESS_FILE);
+  const file = path.join(repoDir, naming.accessFile);
   return withFileLock(`${file}.lock`, () => {
     let access: RepoAccess = { private: false, collaborators: {} };
     if (fs.existsSync(file)) {

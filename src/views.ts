@@ -13,6 +13,7 @@ import { IconName, icon } from './icons';
 import { Upstream } from './source';
 import { avatar } from './avatar';
 import { buildInfo } from './version';
+import { naming } from './naming';
 // Type only: profile.ts builds its URLs with encPath from here, so a value
 // import in this direction would close a cycle.
 import type { CollectionProfile } from './profile';
@@ -68,6 +69,11 @@ export interface PageOpts {
   // age-encrypted file, so the vendored cryptography is never fetched by a
   // page that cannot need it.
   ageScript?: boolean;
+  // A class on <body>, and further tags for <head>, for a sibling application
+  // (see src/naming.ts) whose own pages need a stylesheet or script of their
+  // own, or a page shaped differently from the forge's. mochi sets neither.
+  bodyClass?: string;
+  head?: Html;
 }
 
 export interface JumpContext {
@@ -167,7 +173,7 @@ function userBox(opts: PageOpts): Html {
  * mentions is a shortcut nobody finds.
  */
 function jumpButton(): Html {
-  return html`<button type="button" class="jump-open" data-jump-open aria-haspopup="dialog" aria-label="Jump to a repository">${icon(
+  return html`<button type="button" class="jump-open" data-jump-open aria-haspopup="dialog" aria-label="Jump to a ${naming.itemNoun}">${icon(
     'search'
   )}<span class="jump-label">Jump to</span><kbd class="jump-key">/</kbd></button>`;
 }
@@ -198,7 +204,7 @@ function themeMenu(): Html {
  * to be reachable from wherever they arrived rather than from one listing.
  */
 function aboutLink(): Html {
-  return html`<a class="topbar-icon" href="/about" aria-label="About" title="About this vault">${icon('info')}</a>`;
+  return html`<a class="topbar-icon" href="/about" aria-label="About" title="About this ${naming.rootNoun}">${icon('info')}</a>`;
 }
 
 function jumpDialog(jump: JumpContext | null): Html {
@@ -208,7 +214,7 @@ function jumpDialog(jump: JumpContext | null): Html {
       html`<script type="application/json" id="jump-data">${raw(JSON.stringify(jump).replace(/</g, '\\u003c'))}</script>`
     : '';
   return html`${data}<dialog class="jump" id="jump" aria-label="Jump to">
-<div class="jump-field">${icon('search', 'jump-glyph')}<input id="jump-q" type="text" autocomplete="off" spellcheck="false" placeholder="Jump to a repository" aria-label="Jump to a repository" aria-controls="jump-list"></div>
+<div class="jump-field">${icon('search', 'jump-glyph')}<input id="jump-q" type="text" autocomplete="off" spellcheck="false" placeholder="Jump to a ${naming.itemNoun}" aria-label="Jump to a ${naming.itemNoun}" aria-controls="jump-list"></div>
 <ul class="jump-list" id="jump-list" role="listbox" aria-label="Results"></ul>
 <div class="jump-foot"><kbd>↑</kbd><kbd>↓</kbd> move<kbd>↵</kbd>open<kbd>esc</kbd>close</div>
 </dialog>`;
@@ -224,8 +230,8 @@ function jumpDialog(jump: JumpContext | null): Html {
  * have had to invent. See src/version.ts for where the stamp comes from.
  */
 function buildStamp(): Html {
-  const build = buildInfo();
-  const parts: Html[] = [html`Mochi Forge <span class="mono">${build.version}</span>`];
+  const build = (naming.buildInfo ?? buildInfo)();
+  const parts: Html[] = [html`${naming.displayName} <span class="mono">${build.version}</span>`];
   if (build.commit) parts.push(html`build <span class="mono">${build.commit}</span>`);
   const iso = build.builtAt;
   const built = iso ? new Date(iso) : null;
@@ -255,7 +261,9 @@ export function layout(title: string, content: Html, opts: PageOpts = {}): strin
   // lets /assets/page.js be one cacheable file for every vault: the script
   // reads these two attributes instead of being generated around them.
   return html`<!doctype html>
-<html lang="en" data-theme-vault="${theme}" data-theme-dark="${darkFor(activeTheme())}">
+<html lang="en" data-theme-vault="${theme}" data-theme-dark="${darkFor(activeTheme())}"${
+    naming.jumpGroup ? html` data-jump-group="${naming.jumpGroup}"` : ''
+  }>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -264,10 +272,10 @@ export function layout(title: string, content: Html, opts: PageOpts = {}): strin
 <link id="hl-css" rel="stylesheet" href="/assets/hl.css?t=${encodeURIComponent(theme)}">
 <link rel="stylesheet" href="/assets/katex/katex.css">
 <link rel="icon" href="/favicon.svg?t=${encodeURIComponent(theme)}" type="image/svg+xml">
-<script src="/assets/page.js?v=${script}"></script>${age}
+<script src="/assets/page.js?v=${script}"></script>${age}${naming.pageHead ? raw(naming.pageHead) : ''}${opts.head ?? ''}
 </head>
-<body>
-<header class="topbar"><div class="container"><a class="brand" href="/">${raw(WORDMARK)}</a><span class="crumbs">${opts.crumbs}</span><div class="userbox">${jumpButton()}${aboutLink()}${themeMenu()}${userBox(opts)}</div></div></header>
+${opts.bodyClass ? html`<body class="${opts.bodyClass}">` : raw('<body>')}
+<header class="topbar"><div class="container"><a class="brand" href="/">${raw(naming.wordmark ?? WORDMARK)}</a><span class="crumbs">${opts.crumbs}</span><div class="userbox">${jumpButton()}${aboutLink()}${themeMenu()}${userBox(opts)}</div></div></header>
 <main class="container">
 ${content}
 </main>
