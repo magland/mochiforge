@@ -2402,6 +2402,10 @@ run_code "a misspelled subcommand is suggested" 2 cli user lst
 err_has "by name" "did you mean 'user list'"
 run_code "an unknown option is a usage error" 2 cli whoami --jsn
 err_has "with the nearest real option" 'did you mean --json'
+run_code "an unknown command with no near match is a usage error" 2 cli zzzzzz
+err_has "pointing at this program's help" "Run 'mochi --help'"
+run_ok "--version prints the version" cli --version
+body_has "after the program's name" '^mochi [0-9]'
 
 run_ok "commands --json dumps the registry" cli commands --json
 stdout_is_json "the registry is one JSON value on stdout"

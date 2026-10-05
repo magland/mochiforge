@@ -29,6 +29,7 @@ import { CliError, EXIT_AUTH, EXIT_FAIL, EXIT_USAGE, jsonErrorsWanted } from './
 import { readStdin } from './cli/input';
 import { JSON_OPTION, jsonMode, pickFields, pickObject, printJson } from './cli/output';
 import { Cli, Command, Invocation, dispatch, registryJson } from './cli/parse';
+import { packageVersion } from './version';
 import { TARGET_OPTIONS, targetFrom } from './cli/target';
 import { forkCmd, importCmd } from './import-cli';
 import { syncCommand } from './cli/sync-cmd';
@@ -807,6 +808,7 @@ command set without reading any documentation.`,
 
 const cli: Cli = {
   name: 'mochi',
+  version: packageVersion,
   groups: [
     { name: 'repo', summary: 'Repositories: what the vault holds' },
     { name: 'branch', summary: 'Branches' },

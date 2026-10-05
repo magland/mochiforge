@@ -79,6 +79,8 @@ export interface Cli {
   commands: Command[];
   /** Printed at the end of the top-level help. */
   footer?: string;
+  /** The program's version, printed by `<name> --version`. */
+  version?: () => string;
 }
 
 function usageError(message: string): never {
@@ -136,7 +138,7 @@ function looksLikeFieldList(token: string): boolean {
 
 type Value = string | boolean | number | string[];
 
-function parseOptions(cmd: Command, argv: string[]): { values: Map<string, Value>; args: string[] } {
+function parseOptions(cli: Cli, cmd: Command, argv: string[]): { values: Map<string, Value>; args: string[] } {
   const values = new Map<string, Value>();
   const args: string[] = [];
   const names = (cmd.options ?? []).filter((o) => !o.hidden).map((o) => o.name);
@@ -175,7 +177,7 @@ function parseOptions(cmd: Command, argv: string[]): { values: Map<string, Value
         const near = nearest(name, names);
         usageError(
           `unknown option --${name} for '${cmd.path.join(' ')}'` +
-            (near ? `; did you mean --${near}?` : `. Run 'mochi ${cmd.path.join(' ')} --help'.`)
+            (near ? `; did you mean --${near}?` : `. Run '${cli.name} ${cmd.path.join(' ')} --help'.`)
         );
       }
       if (spec.type === 'boolean') {
@@ -194,7 +196,7 @@ function parseOptions(cmd: Command, argv: string[]): { values: Map<string, Value
     // A lone '-' is a positional: several options take it to mean stdin.
     if (a.startsWith('-') && a.length > 1) {
       const spec = findShort(cmd, a.slice(1));
-      if (!spec) usageError(`unknown option ${a} for '${cmd.path.join(' ')}'. Run 'mochi ${cmd.path.join(' ')} --help'.`);
+      if (!spec) usageError(`unknown option ${a} for '${cmd.path.join(' ')}'. Run '${cli.name} ${cmd.path.join(' ')} --help'.`);
       if (spec.type === 'boolean') values.set(spec.name, true);
       else i = take(spec, undefined, argv, i);
       continue;
@@ -204,21 +206,21 @@ function parseOptions(cmd: Command, argv: string[]): { values: Map<string, Value
   return { values, args };
 }
 
-function checkArgs(cmd: Command, args: string[]): void {
+function checkArgs(cli: Cli, cmd: Command, args: string[]): void {
   const specs = cmd.args ?? [];
   const required = specs.filter((s) => s.required).length;
   if (args.length < required) {
-    usageError(`'mochi ${cmd.path.join(' ')}' needs ${usageLine(cmd)}`);
+    usageError(`'${cli.name} ${cmd.path.join(' ')}' needs ${usageLine(cmd)}`);
   }
   const variadic = specs.some((s) => s.variadic);
   if (!variadic && args.length > specs.length) {
-    usageError(`unexpected argument '${args[specs.length]}' to 'mochi ${cmd.path.join(' ')}'`);
+    usageError(`unexpected argument '${args[specs.length]}' to '${cli.name} ${cmd.path.join(' ')}'`);
   }
 }
 
 function invocationFor(cli: Cli, cmd: Command, argv: string[]): Invocation {
-  const { values, args } = cmd.raw ? { values: new Map<string, Value>(), args: [] } : parseOptions(cmd, argv);
-  if (!cmd.raw) checkArgs(cmd, args);
+  const { values, args } = cmd.raw ? { values: new Map<string, Value>(), args: [] } : parseOptions(cli, cmd, argv);
+  if (!cmd.raw) checkArgs(cli, cmd, args);
   if (values.has('json')) setJsonErrors(true);
   return {
     args,
@@ -306,6 +308,7 @@ export function rootHelp(cli: Cli): string {
   }
   out += `\nRun '${cli.name} <group> --help' for a group's commands, or '${cli.name} <command> --help'\n`;
   out += `for one command's options. '${cli.name} commands --json' dumps the whole command set.\n`;
+  if (cli.version) out += `'${cli.name} --version' prints the version.\n`;
   if (cli.footer) out += `\n${cli.footer.trim()}\n`;
   return out;
 }
@@ -348,6 +351,10 @@ export async function dispatch(cli: Cli, argv: string[]): Promise<void> {
     process.stdout.write(rootHelp(cli));
     return;
   }
+  if (argv.length === 1 && argv[0] === '--version' && cli.version) {
+    process.stdout.write(`${cli.name} ${cli.version()}\n`);
+    return;
+  }
 
   // The longest matching path wins, so a two-word command is found before the
   // one-word command that shares its first word could shadow it.
@@ -372,7 +379,7 @@ export async function dispatch(cli: Cli, argv: string[]): Promise<void> {
       const sub = argv[1];
       if (sub === undefined || HELP_FLAGS.has(sub)) {
         process.stdout.write(groupHelp(cli, head));
-        if (sub === undefined) throw new CliError(`'mochi ${head}' needs a command: ${subs.join(', ')}`, EXIT_USAGE);
+        if (sub === undefined) throw new CliError(`'${cli.name} ${head}' needs a command: ${subs.join(', ')}`, EXIT_USAGE);
         return;
       }
       // A group may nest twice ('user token list'), so a second word that names
@@ -382,11 +389,11 @@ export async function dispatch(cli: Cli, argv: string[]): Promise<void> {
         const thirds = [...new Set(deeper.map((c) => c.path[2]))];
         const third = argv[2];
         if (third === undefined || HELP_FLAGS.has(third)) {
-          throw new CliError(`'mochi ${head} ${sub}' needs a command: ${thirds.join(', ')}`, EXIT_USAGE);
+          throw new CliError(`'${cli.name} ${head} ${sub}' needs a command: ${thirds.join(', ')}`, EXIT_USAGE);
         }
         const near = nearest(third, thirds);
         throw new CliError(
-          `unknown command 'mochi ${head} ${sub} ${third}'` +
+          `unknown command '${cli.name} ${head} ${sub} ${third}'` +
             (near ? `; did you mean '${head} ${sub} ${near}'?` : `. One of: ${thirds.join(', ')}`),
           EXIT_USAGE
         );
@@ -394,14 +401,14 @@ export async function dispatch(cli: Cli, argv: string[]): Promise<void> {
       // What was typed is one word, so it is compared against single words.
       const near = nearest(sub, [...new Set(under.map((c) => c.path[1]))]);
       throw new CliError(
-        `unknown command 'mochi ${head} ${sub}'` + (near ? `; did you mean '${head} ${near}'?` : `. One of: ${subs.join(', ')}`),
+        `unknown command '${cli.name} ${head} ${sub}'` + (near ? `; did you mean '${head} ${near}'?` : `. One of: ${subs.join(', ')}`),
         EXIT_USAGE
       );
     }
     const tops = [...new Set([...cli.groups.map((g) => g.name), ...cli.commands.map((c) => c.path[0])])];
     const near = nearest(head, tops);
     throw new CliError(
-      `unknown command '${head}'` + (near ? `; did you mean '${near}'?` : ". Run 'mochi --help'."),
+      `unknown command '${head}'` + (near ? `; did you mean '${near}'?` : `. Run '${cli.name} --help'.`),
       EXIT_USAGE
     );
   }
